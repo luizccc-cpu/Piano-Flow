@@ -1,0 +1,20 @@
+{
+  "name": "KeyFlow — 5-Second Horizon Virtual Piano",
+  "short_name": "KeyFlow",
+  "description": "5-Second Horizon Falling Notes Virtual Piano with Wait Mode, Hand Isolation, A-B Loop, and Mellow Felt Grand Audio Engine.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "background_color": "#0a0e17",
+  "theme_color": "#0a0e17",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='112' fill='%230a0e17'/%3E%3Crect x='64' y='96' width='52' height='160' rx='14' fill='%232997ff'/%3E%3Crect x='230' y='64' width='52' height='192' rx='14' fill='%2334d399'/%3E%3Crect x='396' y='116' width='52' height='140' rx='14' fill='%2334d399'/%3E%3Cline x1='40' y1='284' x2='472' y2='284' stroke='%2338bdf8' stroke-width='8' stroke-linecap='round'/%3E%3Crect x='56' y='304' width='92' height='148' rx='12' fill='%23f8fafc'/%3E%3Crect x='158' y='304' width='92' height='148' rx='12' fill='%23f8fafc'/%3E%3Crect x='260' y='304' width='92' height='148' rx='12' fill='%23f8fafc'/%3E%3Crect x='362' y='304' width='92' height='148' rx='12' fill='%23f8fafc'/%3E%3Crect x='124' y='304' width='56' height='92' rx='8' fill='%231e293b'/%3E%3Crect x='228' y='304' width='56' height='92' rx='8' fill='%231e293b'/%3E%3Crect x='332' y='304' width='56' height='92' rx='8' fill='%231e293b'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
