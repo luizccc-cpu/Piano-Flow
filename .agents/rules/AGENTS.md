@@ -1,0 +1,21 @@
+---
+trigger: always_on
+description: "Core architecture, UX constraints, and phased roadmap for the Falling Notes Virtual Piano app"
+---
+
+# Project Blueprint: Falling Notes Virtual Piano (iPad Edition)
+
+## Core UX & Audio Rules
+- **Target Device:** iPad Landscape orientation (supports Add to Home Screen fullscreen mode).
+- **Constant 5-Second Horizon:** Notes must always spawn at the top of the canvas exactly 5.0 seconds before impact (`NOW` line), regardless of song BPM or playback speed multiplier.
+- **Readable Falling Bars:** Every falling bar must render its note name and octave badge (e.g., `F3`, `C4`) inside the leading edge of the bar.
+- **Auto-Scaled Keyboard:** Dynamically size the virtual keyboard to the exact octave range of the active song (minimum 2 octaves, maximum 88 keys), with C-octave labels on the keys.
+- **Audio Engine:** Default to the "Mellow Felt Grand" preset with a live Felt Softness / Warmth low-pass & transient shaper slider (0%–100%).
+
+## Development Phases
+- **Phase 1 (Complete):** Core visualizer, 5s horizon, auto-scaled keyboard, Mellow Felt Grand sound engine, A-B looping, Hand Isolation (L/R), Wait Mode, and `.MID` file upload.
+- **Phase 2 (Next):** 
+  - Smart A-B Loop Tempo Ramp (start loop at 50% speed and auto-increment by +5% after each clean pass).
+  - Advanced Left/Right Hand voice-splitting algorithm using pitch clustering and human hand-span constraints (max 10th interval per hand) for single-track MIDI files.
+  - Measure & beat gridlines synchronized to MIDI time signatures.
+- **Phase 3 (Future):** Python backend (FastAPI) running `HT-Demucs` (stem separation) + `ByteDance Piano Transcription` / `Basic Pitch` to convert any audio file or song link into an accurate, hand-separated MIDI file.
