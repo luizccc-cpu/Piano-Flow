@@ -13,8 +13,8 @@
     constructor() {
       this.ctx = null;
       this.muted = false;
-      this.preset = 'mellow_felt'; // 'mellow_felt' | 'acoustic_grand' | 'warm_upright' | 'electric_piano'
-      this.warmth = 78; // 0..100
+      this.preset = 'acoustic_grand'; // 'acoustic_grand' | 'mellow_felt' | 'warm_upright' | 'electric_piano'
+      this.warmth = 24; // 0..100
       this.sustainPedal = false;
       this.sustainedVoices = [];
 

@@ -10,7 +10,7 @@ description: "Core architecture, UX constraints, and phased roadmap for the Fall
 - **Constant 5-Second Horizon:** Notes must always spawn at the top of the canvas exactly 5.0 seconds before impact (`NOW` line), regardless of song BPM or playback speed multiplier.
 - **Readable Falling Bars:** Every falling bar must render its note name and octave badge (e.g., `F3`, `C4`) inside the leading edge of the bar.
 - **Auto-Scaled Keyboard:** Dynamically size the virtual keyboard to the exact octave range of the active song (minimum 2 octaves, maximum 88 keys), with C-octave labels on the keys.
-- **Audio Engine:** Default to the "Mellow Felt Grand" preset with a live Felt Softness / Warmth low-pass & transient shaper slider (0%–100%).
+- **Audio Engine:** Default to the "Acoustic Grand Piano" preset (with "Mellow Felt Grand" second on the list) and a live Felt Softness / Warmth low-pass & transient shaper slider (0%–100%).
 
 ## Development Phases
 - **Phase 1 (Complete):** Core visualizer, 5s horizon, auto-scaled keyboard, Mellow Felt Grand sound engine, A-B looping, Hand Isolation (L/R), Wait Mode, and `.MID` file upload.
