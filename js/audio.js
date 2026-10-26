@@ -7,6 +7,7 @@
    * - Combines multi-partial acoustic piano modeling + wooden soundboard
    *   body EQ + velocity-sensitive felt hammer transient + stereo hall
    *   impulse reverb + optional background Salamander Grand sample loader.
+   * - Supports WebMIDI CC 64 Sustain Pedal extension & smooth damping.
    ********************************************************************/
   class PureAcousticPianoEngine {
     constructor() {
@@ -14,6 +15,8 @@
       this.muted = false;
       this.preset = 'mellow_felt'; // 'mellow_felt' | 'acoustic_grand' | 'warm_upright' | 'electric_piano'
       this.warmth = 78; // 0..100
+      this.sustainPedal = false;
+      this.sustainedVoices = [];
 
       this.masterGain = null;
       this.feltFilter = null;
@@ -99,6 +102,37 @@
         // Audio blocked or unsupported
       }
       return this.ctx;
+    }
+
+    setSustainPedal(isDown) {
+      const nextState = !!isDown;
+      if (this.sustainPedal === nextState) return;
+      this.sustainPedal = nextState;
+
+      if (!nextState && this.ctx && this.sustainedVoices.length > 0) {
+        const now = this.ctx.currentTime;
+        for (let i = 0; i < this.sustainedVoices.length; i++) {
+          const v = this.sustainedVoices[i];
+          if (v && v.gainNode && now < v.endTime) {
+            try {
+              v.gainNode.gain.cancelScheduledValues(now);
+              v.gainNode.gain.setValueAtTime(Math.max(0.0002, v.gainNode.gain.value || 0.05), now);
+              v.gainNode.gain.setTargetAtTime(0.0001, now, 0.16);
+            } catch (e) {}
+          }
+        }
+        this.sustainedVoices = [];
+      }
+    }
+
+    registerSustainedVoice(gainNode, endTime) {
+      if (!this.sustainPedal || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      this.sustainedVoices = this.sustainedVoices.filter(v => v.endTime > now);
+      if (this.sustainedVoices.length > 48) {
+        this.sustainedVoices.shift();
+      }
+      this.sustainedVoices.push({ gainNode, endTime });
     }
 
     createHallImpulseBuffer(durationSec, decayRate) {
@@ -234,7 +268,8 @@
       const now = ctx.currentTime;
       const freq = global.midiToFreq(midi);
       const vel = Math.max(0.15, Math.min(1.0, velocity));
-      const dur = Math.max(0.22, Math.min(5.5, durationSec));
+      const baseDur = this.sustainPedal ? Math.max(durationSec * 2.6, 2.8) : durationSec;
+      const dur = Math.max(0.22, Math.min(6.5, baseDur));
 
       // Check if we have a decoded Salamander acoustic sample nearby and not in Electric Piano mode
       const sampleBaseMidi = (this.preset !== 'electric_piano') ? this.findClosestSample(midi) : null;
@@ -261,18 +296,21 @@
         const env = ctx.createGain();
         const attack = (this.preset === 'mellow_felt') ? 0.016 : 0.003;
         const peakGain = vel * (this.preset === 'mellow_felt' ? 0.65 : 0.8);
+        const releaseTC = this.sustainPedal ? 0.65 : 0.32;
 
         env.gain.setValueAtTime(0.0001, now);
         env.gain.linearRampToValueAtTime(peakGain, now + attack);
         env.gain.setTargetAtTime(peakGain * 0.45, now + attack + 0.08, 0.65);
-        env.gain.setTargetAtTime(0.0001, now + dur, 0.32);
+        env.gain.setTargetAtTime(0.0001, now + dur, releaseTC);
 
         src.connect(voiceFilter);
         voiceFilter.connect(env);
         env.connect(this.bodyLowEQ);
 
+        const stopTime = now + dur + (this.sustainPedal ? 2.4 : 1.5);
         src.start(now);
-        src.stop(now + dur + 1.5);
+        src.stop(stopTime);
+        this.registerSustainedVoice(env, stopTime);
       } catch (e) {}
     }
 
@@ -283,7 +321,7 @@
 
         // Higher notes decay naturally faster on a real acoustic piano
         const pitchFactor = Math.max(0.3, Math.min(1.6, Math.pow(60 / Math.max(24, midi), 1.3)));
-        const stringDecay = Math.max(0.7, 2.2 * pitchFactor);
+        const stringDecay = Math.max(0.7, (this.sustainPedal ? 3.2 : 2.2) * pitchFactor);
         const attackTime = (this.preset === 'mellow_felt') ? 0.016 : 0.005;
         const masterPeak = vel * 0.24;
 
@@ -305,6 +343,7 @@
         voiceGain.connect(this.bodyLowEQ);
 
         const stopTime = now + dur + stringDecay + 0.05;
+        this.registerSustainedVoice(voiceGain, stopTime);
 
         if (this.preset === 'electric_piano') {
           // Warm Vintage Rhodes Tine + Fundamental Voice

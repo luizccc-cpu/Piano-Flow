@@ -41,8 +41,13 @@
         <span id="waitBannerText">Wait Mode: Play highlighted keys</span>
       </div>
 
-      <!-- Right Controls: Range Mode & Settings Icon -->
+      <!-- Right Controls: Live MIDI Status, Range Mode & Settings Icon -->
       <div class="top-right">
+        <div id="midiStatusBadge" class="midi-status-badge" title="Connect a USB or Bluetooth MIDI keyboard">
+          <span id="midiStatusDot" class="midi-status-dot"></span>
+          <span id="midiStatusText">MIDI</span>
+        </div>
+
         <select id="rangeModeSelect" class="ui-select" title="Dynamic Virtual Piano Range">
           <option value="auto">Auto-Scale Range</option>
           <option value="compact">Min 2 Octaves</option>
@@ -79,6 +84,13 @@
       <div class="hud-divider"></div>
 
       <div class="hud-row" style="font-size:12px;">
+        <span>Show Measure &amp; Beat Grid</span>
+        <button id="measureGridSwitch" class="switch-btn active-blue" aria-label="Toggle Measure and Beat Grid">
+          <span class="switch-thumb"></span>
+        </button>
+      </div>
+
+      <div class="hud-row" style="font-size:12px;">
         <span>Show All Key Names</span>
         <button id="allKeyLabelsSwitch" class="switch-btn" aria-label="Toggle All Key Labels">
           <span class="switch-thumb"></span>
@@ -91,6 +103,12 @@
           <span class="switch-thumb"></span>
         </button>
       </div>
+
+      <div class="hud-divider"></div>
+
+      <button id="resplitHandsBtn" class="ui-btn ui-btn-accent popover-action-btn" title="Re-run smart L/R voice separation using 10th hand-span constraints">
+        <span>Re-split Hands (Smart AI)</span>
+      </button>
     </div>
 
     <!-- Thin Top Song Progress Strip -->
@@ -214,6 +232,7 @@
       <!-- Interactive Timeline & A-B Loop -->
       <div class="timeline-wrapper">
         <button id="abLoopBtn" class="loop-toggle-btn" title="Toggle A–B Section Loop">A–B Loop</button>
+        <button id="loopRampBtn" class="loop-ramp-btn" title="Auto-increment loop tempo by +5% after each clean pass">+5% Ramp</button>
 
         <div id="timelineTrack" class="timeline-interactive">
           <div class="timeline-rail">

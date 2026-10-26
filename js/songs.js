@@ -38,6 +38,29 @@
   }
 
   /********************************************************************
+   * MUSICAL MEASURE & BEAT GRID GENERATOR
+   ********************************************************************/
+  function generateBeatGrid(duration, beatSec, beatsPerBar, offsetSec = 0.8) {
+    const beats = [];
+    const safeBeatSec = Math.max(0.08, beatSec || 0.5);
+    const bpb = Math.max(1, Math.round(beatsPerBar || 4));
+    let beatIdx = 0;
+
+    for (let t = offsetSec; t <= duration + 0.05; t += safeBeatSec) {
+      const barNumber = Math.floor(beatIdx / bpb) + 1;
+      const beatNumber = (beatIdx % bpb) + 1;
+      beats.push({
+        time: Math.round(t * 1000) / 1000,
+        isMeasure: beatNumber === 1,
+        barNumber: barNumber,
+        beatNumber: beatNumber
+      });
+      beatIdx++;
+    }
+    return beats;
+  }
+
+  /********************************************************************
    * BUILT-IN ACCURATE SONG ARRANGEMENTS
    ********************************************************************/
   function createLetItBe() {
@@ -106,7 +129,13 @@
     }
 
     notes.sort((a, b) => a.time - b.time || a.midi - b.midi);
-    return { title: 'Let It Be - The Beatles', notes, duration: 32 * beat + 2.2 };
+    const duration = 32 * beat + 2.2;
+    return {
+      title: 'Let It Be - The Beatles',
+      notes,
+      duration,
+      beats: generateBeatGrid(duration, beat, 4, 0.8)
+    };
   }
 
   function createImagine() {
@@ -149,7 +178,13 @@
     }
 
     notes.sort((a, b) => a.time - b.time || a.midi - b.midi);
-    return { title: 'Imagine - John Lennon', notes, duration: 32 * beat + 2.2 };
+    const duration = 32 * beat + 2.2;
+    return {
+      title: 'Imagine - John Lennon',
+      notes,
+      duration,
+      beats: generateBeatGrid(duration, beat, 4, 0.8)
+    };
   }
 
   function createClairDeLune() {
@@ -187,7 +222,13 @@
     ];
     seq.forEach(s => add(s.n, s.t, s.d, s.h, s.v));
     notes.sort((a, b) => a.time - b.time || a.midi - b.midi);
-    return { title: 'Clair de Lune - Debussy', notes, duration: 39 * u + 2.2 };
+    const duration = 39 * u + 2.2;
+    return {
+      title: 'Clair de Lune - Debussy',
+      notes,
+      duration,
+      beats: generateBeatGrid(duration, u, 9, 0.8)
+    };
   }
 
   function createGymnopedie() {
@@ -236,7 +277,13 @@
     });
 
     notes.sort((a, b) => a.time - b.time || a.midi - b.midi);
-    return { title: 'Gymnopédie No. 1 - Satie', notes, duration: 30 * beat + 2.2 };
+    const duration = 30 * beat + 2.2;
+    return {
+      title: 'Gymnopédie No. 1 - Satie',
+      notes,
+      duration,
+      beats: generateBeatGrid(duration, beat, 3, 0.8)
+    };
   }
 
   function createPyramidSong() {
@@ -304,7 +351,13 @@
     }
 
     notes.sort((a, b) => a.time - b.time || a.midi - b.midi);
-    return { title: 'Pyramid Song - Radiohead', notes, duration: 32 * beat + 2.2 };
+    const duration = 32 * beat + 2.2;
+    return {
+      title: 'Pyramid Song - Radiohead',
+      notes,
+      duration,
+      beats: generateBeatGrid(duration, beat, 8, 0.8)
+    };
   }
 
   const SONGS = {
@@ -322,5 +375,6 @@
   global.isBlackMidi = isBlackMidi;
   global.midiToFreq = midiToFreq;
   global.formatTime = formatTime;
+  global.generateBeatGrid = generateBeatGrid;
   global.SONGS = SONGS;
 })(window);

@@ -7,6 +7,7 @@
   const formatTime = global.formatTime;
   const parseStandardMidiFile = global.parseStandardMidiFile;
   const calculateAutoRange = global.calculateAutoRange;
+  const assignHandsSmart = global.assignHandsSmart;
   const audioEngine = global.audioEngine;
 
   /********************************************************************
@@ -22,18 +23,23 @@
     waitingMidis: new Set(),
     clearedWaitBuckets: new Set(),
     currentWaitBucket: null,
+    waitStartedAtMs: null,
+    passHadLongWaitStall: false,
 
     handIsoMaster: true,
     leftHandOn: true,
     rightHandOn: true,
 
     rangeMode: 'auto', // 'auto' | 'compact' | 'full88'
+    showMeasureGrid: true,
     showAllKeyNames: false,
 
     loopEnabled: false,
     loopA: 3.0,
     loopB: 14.0,
     speedRamp: false,
+    loopPassCount: 1,
+    targetRampSpeed: 1.25,
 
     minMidi: 48,
     maxMidi: 84,
@@ -45,6 +51,14 @@
     userPressed: {}, // midi -> { hand, time }
     particles: []
   };
+
+  function formatSpeedBadge(speed) {
+    const rounded = Math.round(speed * 100) / 100;
+    if (Math.abs(rounded - Math.round(rounded * 10) / 10) < 0.001) {
+      return rounded.toFixed(1) + 'x';
+    }
+    return rounded.toFixed(2) + 'x';
+  }
 
   /********************************************************************
    * FAULT-TOLERANT CANVAS SIZING & 60FPS RENDERER
@@ -204,10 +218,66 @@
       ctx.stroke();
     }
 
-    // 3. Horizontal 5-Second Horizon Gridlines (5s down to 1s)
     const horizon = state.horizonSec;
     const pxPerSec = strikeY / horizon;
+    const curT = state.currentTime;
 
+    // 3A. Scrolling Musical Measure & Beat Gridlines
+    if (state.showMeasureGrid && Array.isArray(state.song.beats)) {
+      const beats = state.song.beats;
+      ctx.save();
+      for (let i = 0; i < beats.length; i++) {
+        const b = beats[i];
+        if (b.time < curT) continue;
+        if (b.time > curT + horizon + 0.05) break;
+
+        const y = strikeY - (b.time - curT) * pxPerSec;
+        if (y < 8 || y > strikeY - 2) continue;
+
+        if (b.isMeasure) {
+          ctx.beginPath();
+          ctx.setLineDash([]);
+          ctx.moveTo(0, y);
+          ctx.lineTo(width - 42, y);
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.22)';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          // Measure number pill on the left side
+          const labelText = 'BAR ' + b.barNumber;
+          ctx.font = '700 9.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+          const textW = ctx.measureText(labelText).width;
+          const pillW = textW + 10;
+          const pillH = 15;
+          const pillX = 10;
+          const pillY = Math.max(4, y - pillH - 2);
+
+          drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 4);
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.35)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          ctx.fillStyle = 'rgba(125, 211, 252, 0.88)';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(labelText, pillX + 5, pillY + pillH / 2 + 0.5);
+        } else {
+          ctx.beginPath();
+          ctx.setLineDash([4, 6]);
+          ctx.moveTo(0, y);
+          ctx.lineTo(width - 42, y);
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      }
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    // 3B. Horizontal 5-Second Horizon Markers (1s..5s on the right edge)
     ctx.save();
     ctx.font = '600 11px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textAlign = 'right';
@@ -217,9 +287,9 @@
       const y = strikeY - s * pxPerSec;
       if (y < 14) continue;
       ctx.beginPath();
-      ctx.moveTo(0, y);
+      ctx.moveTo(state.showMeasureGrid ? (width - 52) : 0, y);
       ctx.lineTo(width - 42, y);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.075)';
+      ctx.strokeStyle = state.showMeasureGrid ? 'rgba(148, 163, 184, 0.28)' : 'rgba(255, 255, 255, 0.075)';
       ctx.lineWidth = 1;
       ctx.stroke();
 
@@ -236,7 +306,6 @@
     });
 
     const notes = state.song.notes;
-    const curT = state.currentTime;
 
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
@@ -502,6 +571,7 @@
     state.playedIndices.clear();
     state.clearedWaitBuckets.clear();
     state.waitingMidis.clear();
+    state.waitStartedAtMs = null;
     updateWaitBanner();
 
     const notes = state.song.notes;
@@ -515,7 +585,12 @@
 
   function advanceClock(dt) {
     if (!state.isPlaying) return;
-    if (state.waitMode && state.waitingMidis.size > 0) return;
+    if (state.waitMode && state.waitingMidis.size > 0) {
+      if (state.waitStartedAtMs !== null && (performance.now() - state.waitStartedAtMs) > 3000) {
+        state.passHadLongWaitStall = true;
+      }
+      return;
+    }
 
     const prevT = state.currentTime;
     let nextT = prevT + dt * state.speed;
@@ -544,6 +619,7 @@
             }
           }
           state.currentWaitBucket = bucket;
+          state.waitStartedAtMs = performance.now();
           updateWaitBanner();
           break;
         }
@@ -570,10 +646,14 @@
     }
 
     if (state.loopEnabled && state.currentTime >= state.loopB) {
-      if (state.speedRamp && state.speed < 1.5) {
-        state.speed = Math.min(1.5, Math.round((state.speed + 0.05) * 100) / 100);
-        document.getElementById('speedBtn').textContent = state.speed + 'x';
+      state.loopPassCount++;
+      if (state.speedRamp && !state.passHadLongWaitStall && state.speed < state.targetRampSpeed) {
+        state.speed = Math.min(state.targetRampSpeed, Math.round((state.speed + 0.05) * 100) / 100);
+        document.getElementById('speedBtn').textContent = formatSpeedBadge(state.speed);
       }
+      state.passHadLongWaitStall = false;
+      state.waitStartedAtMs = null;
+      syncLoopUI();
       seekTo(state.loopA);
       return;
     }
@@ -622,6 +702,14 @@
     box.style.width = (bPct - aPct) + '%';
     hA.style.left = aPct + '%';
     hB.style.left = bPct + '%';
+
+    if (state.loopEnabled && state.speedRamp) {
+      box.textContent = 'LOOP • PASS ' + state.loopPassCount + ' • ' + state.speed.toFixed(2) + 'x';
+    } else if (state.loopEnabled && state.loopPassCount > 1) {
+      box.textContent = 'A–B LOOP • PASS ' + state.loopPassCount;
+    } else {
+      box.textContent = 'A–B LOOP';
+    }
   }
 
   function tickLoop(now) {
@@ -644,9 +732,13 @@
     if (kGeom) spawnParticles(kGeom.laneX, kGeom.laneW, hand);
 
     if (state.waitMode && state.waitingMidis.has(midi)) {
+      if (state.waitStartedAtMs !== null && (performance.now() - state.waitStartedAtMs) > 3000) {
+        state.passHadLongWaitStall = true;
+      }
       state.waitingMidis.delete(midi);
       if (state.waitingMidis.size === 0 && state.currentWaitBucket !== null) {
         state.clearedWaitBuckets.add(state.currentWaitBucket);
+        state.waitStartedAtMs = null;
       }
       updateWaitBanner();
     }
@@ -730,20 +822,54 @@
     }
   });
 
-  // Safe WebMIDI Initialization
+  // WebMIDI Initialization, Sustain Pedal (CC 64), and Live Connection Badge
+  const midiStatusBadge = document.getElementById('midiStatusBadge');
+  const midiStatusText = document.getElementById('midiStatusText');
+
+  function updateMidiBadge(connectedNames) {
+    if (!midiStatusBadge || !midiStatusText) return;
+    if (connectedNames && connectedNames.length > 0) {
+      const primaryName = connectedNames[0];
+      midiStatusBadge.classList.add('connected');
+      midiStatusText.textContent = 'MIDI: ' + primaryName;
+      midiStatusBadge.title = 'Connected MIDI: ' + connectedNames.join(', ');
+    } else {
+      midiStatusBadge.classList.remove('connected', 'sustain-active');
+      midiStatusText.textContent = 'MIDI';
+      midiStatusBadge.title = 'Connect a USB or Bluetooth MIDI keyboard';
+    }
+  }
+
   try {
     if (navigator.requestMIDIAccess) {
       navigator.requestMIDIAccess().then(function (access) {
         function bindInputs() {
+          const connectedNames = [];
           access.inputs.forEach(function (input) {
+            if (input.state === 'connected') {
+              connectedNames.push(input.name || input.manufacturer || 'Keyboard');
+            }
             input.onmidimessage = function (msg) {
+              if (!msg.data || msg.data.length < 2) return;
               const cmd = msg.data[0] & 0xf0;
-              const note = msg.data[1];
-              const vel = msg.data[2];
-              if (cmd === 0x90 && vel > 0) userNoteOn(note, vel / 127);
-              else if (cmd === 0x80 || (cmd === 0x90 && vel === 0)) userNoteOff(note);
+              const data1 = msg.data[1];
+              const data2 = msg.data.length > 2 ? msg.data[2] : 0;
+
+              if (cmd === 0x90 && data2 > 0) {
+                userNoteOn(data1, data2 / 127);
+              } else if (cmd === 0x80 || (cmd === 0x90 && data2 === 0)) {
+                userNoteOff(data1);
+              } else if (cmd === 0xb0 && data1 === 64) {
+                // Control Change 64: Sustain Pedal
+                const pedalDown = data2 >= 64;
+                audioEngine.setSustainPedal(pedalDown);
+                if (midiStatusBadge) {
+                  midiStatusBadge.classList.toggle('sustain-active', pedalDown);
+                }
+              }
             };
           });
+          updateMidiBadge(connectedNames);
         }
         bindInputs();
         access.onstatechange = bindInputs;
@@ -762,6 +888,9 @@
     state.currentTime = 0;
     state.loopA = Math.min(2.0, s.duration * 0.12);
     state.loopB = Math.min(s.duration * 0.48, s.duration - 1.0);
+    state.loopPassCount = 1;
+    state.passHadLongWaitStall = false;
+    state.waitStartedAtMs = null;
     document.getElementById('songTitleHeader').textContent = s.title;
 
     resetNoteTriggersBefore(0);
@@ -815,9 +944,16 @@
   // Speed Selector
   const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5];
   document.getElementById('speedBtn').addEventListener('click', function (e) {
-    const idx = SPEEDS.indexOf(state.speed);
-    state.speed = SPEEDS[(idx + 1) % SPEEDS.length];
-    e.currentTarget.textContent = state.speed + 'x';
+    let nextIdx = 0;
+    for (let i = 0; i < SPEEDS.length; i++) {
+      if (SPEEDS[i] > state.speed + 0.01) {
+        nextIdx = i;
+        break;
+      }
+    }
+    state.speed = SPEEDS[nextIdx];
+    e.currentTarget.textContent = formatSpeedBadge(state.speed);
+    syncLoopUI();
   });
 
   // Wait Mode Switch
@@ -827,6 +963,7 @@
     document.getElementById('waitOrb').classList.toggle('orb-dim', !state.waitMode);
     if (!state.waitMode) {
       state.waitingMidis.clear();
+      state.waitStartedAtMs = null;
       updateWaitBanner();
     }
   });
@@ -915,15 +1052,60 @@
     });
   });
 
+  const measureGridSwitch = document.getElementById('measureGridSwitch');
+  if (measureGridSwitch) {
+    measureGridSwitch.addEventListener('click', function (e) {
+      state.showMeasureGrid = !state.showMeasureGrid;
+      e.currentTarget.classList.toggle('active-blue', state.showMeasureGrid);
+    });
+  }
+
   document.getElementById('allKeyLabelsSwitch').addEventListener('click', function (e) {
     state.showAllKeyNames = !state.showAllKeyNames;
     e.currentTarget.classList.toggle('active-blue', state.showAllKeyNames);
   });
 
-  document.getElementById('speedRampSwitch').addEventListener('click', function (e) {
-    state.speedRamp = !state.speedRamp;
-    e.currentTarget.classList.toggle('active-green', state.speedRamp);
-  });
+  // Synced A-B Loop Speed Ramp Controls (Popover Switch + Bottom Bar Pill)
+  const speedRampSwitch = document.getElementById('speedRampSwitch');
+  const loopRampBtn = document.getElementById('loopRampBtn');
+
+  function setSpeedRamp(enabled) {
+    state.speedRamp = !!enabled;
+    if (speedRampSwitch) {
+      speedRampSwitch.classList.toggle('active-green', state.speedRamp);
+    }
+    if (loopRampBtn) {
+      loopRampBtn.classList.toggle('active', state.speedRamp);
+    }
+    syncLoopUI();
+  }
+
+  if (speedRampSwitch) {
+    speedRampSwitch.addEventListener('click', function () {
+      setSpeedRamp(!state.speedRamp);
+    });
+  }
+  if (loopRampBtn) {
+    loopRampBtn.addEventListener('click', function () {
+      setSpeedRamp(!state.speedRamp);
+    });
+  }
+
+  // Manual Smart Hand Re-split Button inside Settings Popover
+  const resplitHandsBtn = document.getElementById('resplitHandsBtn');
+  if (resplitHandsBtn) {
+    resplitHandsBtn.addEventListener('click', function () {
+      if (state.song && Array.isArray(state.song.notes)) {
+        assignHandsSmart(state.song.notes);
+        const span = resplitHandsBtn.querySelector('span') || resplitHandsBtn;
+        const origText = 'Re-split Hands (Smart AI)';
+        span.textContent = '✓ Hands Re-split (Smart AI)';
+        setTimeout(function () {
+          span.textContent = origText;
+        }, 1400);
+      }
+    });
+  }
 
   // Audio Mute Button
   document.getElementById('muteBtn').addEventListener('click', function () {
@@ -941,11 +1123,14 @@
 
   abLoopBtn.addEventListener('click', function () {
     state.loopEnabled = !state.loopEnabled;
+    state.loopPassCount = 1;
+    state.passHadLongWaitStall = false;
+    state.waitStartedAtMs = null;
     abLoopBtn.classList.toggle('active', state.loopEnabled);
     abLoopBox.classList.toggle('visible', state.loopEnabled);
     handleA.classList.toggle('visible', state.loopEnabled);
     handleB.classList.toggle('visible', state.loopEnabled);
-    if (state.loopEnabled) syncLoopUI();
+    syncLoopUI();
   });
 
   let dragTarget = null;
@@ -958,10 +1143,14 @@
   handleA.addEventListener('pointerdown', function (e) {
     e.stopPropagation();
     dragTarget = 'A';
+    state.loopPassCount = 1;
+    state.passHadLongWaitStall = false;
   });
   handleB.addEventListener('pointerdown', function (e) {
     e.stopPropagation();
     dragTarget = 'B';
+    state.loopPassCount = 1;
+    state.passHadLongWaitStall = false;
   });
   timelineTrack.addEventListener('pointerdown', function (e) {
     if (e.target === handleA || e.target === handleB) return;
