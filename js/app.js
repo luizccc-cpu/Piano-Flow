@@ -26,9 +26,10 @@
     waitStartedAtMs: null,
     passHadLongWaitStall: false,
 
-    handIsoMaster: true,
-    leftHandOn: true,
-    rightHandOn: true,
+    handIsoMaster: false,
+    leftHandOn: false,
+    rightHandOn: false,
+    lastIsolatedHand: 'R',
 
     rangeMode: 'auto', // 'auto' | 'compact' | 'full88'
     showMeasureGrid: true,
@@ -969,29 +970,66 @@
   });
 
   // Hand Isolation Controls
-  function syncHandButtons() {
+  function syncHandIsolationUI() {
+    const sw = document.getElementById('handIsoSwitch');
+    const orb = document.getElementById('handOrb');
     const lBtn = document.getElementById('leftHandBtn');
     const rBtn = document.getElementById('rightHandBtn');
-    lBtn.className = 'hand-pill hand-pill-l ' + (state.leftHandOn ? 'active' : 'inactive');
-    rBtn.className = 'hand-pill hand-pill-r ' + (state.rightHandOn ? 'active' : 'inactive');
+
+    if (sw) {
+      sw.classList.toggle('active-green', state.handIsoMaster);
+      sw.setAttribute('aria-checked', state.handIsoMaster ? 'true' : 'false');
+    }
+    if (orb) {
+      orb.classList.toggle('orb-dim', !state.handIsoMaster);
+    }
+    if (lBtn) {
+      lBtn.className = 'hand-pill hand-pill-l ' + (state.handIsoMaster && state.leftHandOn ? 'active' : 'inactive');
+    }
+    if (rBtn) {
+      rBtn.className = 'hand-pill hand-pill-r ' + (state.handIsoMaster && state.rightHandOn ? 'active' : 'inactive');
+    }
   }
 
-  document.getElementById('handIsoSwitch').addEventListener('click', function (e) {
+  document.getElementById('handIsoSwitch').addEventListener('click', function () {
     state.handIsoMaster = !state.handIsoMaster;
-    e.currentTarget.classList.toggle('active-green', state.handIsoMaster);
-    document.getElementById('handOrb').classList.toggle('orb-dim', !state.handIsoMaster);
+    if (state.handIsoMaster) {
+      const targetHand = state.lastIsolatedHand || 'R';
+      state.leftHandOn = (targetHand === 'L');
+      state.rightHandOn = (targetHand === 'R');
+    } else {
+      state.leftHandOn = false;
+      state.rightHandOn = false;
+    }
+    syncHandIsolationUI();
   });
 
   document.getElementById('leftHandBtn').addEventListener('click', function () {
-    state.leftHandOn = !state.leftHandOn;
-    if (!state.leftHandOn && !state.rightHandOn) state.rightHandOn = true;
-    syncHandButtons();
+    if (!state.handIsoMaster || !state.leftHandOn) {
+      state.handIsoMaster = true;
+      state.leftHandOn = true;
+      state.rightHandOn = false;
+      state.lastIsolatedHand = 'L';
+    } else {
+      state.handIsoMaster = false;
+      state.leftHandOn = false;
+      state.rightHandOn = false;
+    }
+    syncHandIsolationUI();
   });
 
   document.getElementById('rightHandBtn').addEventListener('click', function () {
-    state.rightHandOn = !state.rightHandOn;
-    if (!state.leftHandOn && !state.rightHandOn) state.leftHandOn = true;
-    syncHandButtons();
+    if (!state.handIsoMaster || !state.rightHandOn) {
+      state.handIsoMaster = true;
+      state.rightHandOn = true;
+      state.leftHandOn = false;
+      state.lastIsolatedHand = 'R';
+    } else {
+      state.handIsoMaster = false;
+      state.leftHandOn = false;
+      state.rightHandOn = false;
+    }
+    syncHandIsolationUI();
   });
 
   // Sound Preset Selector & Felt Softness Slider
@@ -1188,6 +1226,7 @@
   } catch (e) {}
 
   // Startup Initialization
+  syncHandIsolationUI();
   loadSongById('let_it_be');
   setTimeout(rebuildKeyboardGeometry, 120);
   requestAnimationFrame(tickLoop);
