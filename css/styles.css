@@ -126,6 +126,34 @@ html, body {
   color: #ffffff;
 }
 
+.ui-btn-emerald {
+  background: rgba(52, 211, 153, 0.16);
+  border-color: rgba(52, 211, 153, 0.42);
+  color: #a7f3d0;
+}
+
+.ui-btn-emerald:hover:not(:disabled) {
+  background: rgba(52, 211, 153, 0.28);
+  border-color: rgba(74, 222, 128, 0.65);
+  color: #ffffff;
+}
+
+.ui-btn-danger {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.42);
+  color: #fecaca;
+}
+
+.ui-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.26);
+  color: #ffffff;
+}
+
+.ui-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .icon-btn {
   width: 34px;
   height: 34px;
@@ -679,6 +707,16 @@ html, body {
   padding: 7px 12px;
 }
 
+.popover-btn-row {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.popover-btn-row .ui-btn {
+  flex: 1;
+}
+
 /* ==================== BOTTOM TRANSPORT & A-B LOOP BAR ==================== */
 .bottom-bar {
   flex-shrink: 0;
@@ -883,4 +921,251 @@ html, body {
   .hud-panel { width: 210px; padding: 10px; top: 10px; left: 10px; }
   .time-readout { display: none; }
   .midi-status-badge { display: none; }
+}
+
+/* ==================== PHASE 3: AI AUDIO TRANSCRIBER MODAL ==================== */
+.modal-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 10, 18, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.modal-backdrop.open {
+  display: flex;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 510px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  background: rgba(15, 23, 42, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 16px;
+  padding: 16px 18px;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.modal-header-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-badge {
+  background: rgba(52, 211, 153, 0.2);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  color: #6ee7b7;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.audio-dropzone {
+  border: 1.5px dashed rgba(56, 189, 248, 0.42);
+  background: rgba(15, 23, 42, 0.65);
+  border-radius: 12px;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  text-align: center;
+  color: #38bdf8;
+  transition: all 0.15s ease;
+}
+
+.audio-dropzone:hover, .audio-dropzone.dragover {
+  background: rgba(41, 151, 255, 0.12);
+  border-color: #38bdf8;
+}
+
+.audio-dropzone.has-file {
+  border-style: solid;
+  border-color: rgba(52, 211, 153, 0.6);
+  background: rgba(52, 211, 153, 0.09);
+  color: #34d399;
+}
+
+.dropzone-text {
+  font-size: 12.5px;
+  color: #e2e8f0;
+}
+
+.dropzone-sub {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.modal-grid-2 {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: 10px;
+}
+
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.modal-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.modal-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal-select {
+  width: 100%;
+}
+
+.server-config-box {
+  background: rgba(9, 13, 22, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 11px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.server-config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.modal-text-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 6px 10px;
+  color: #f8fafc;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  outline: none;
+}
+
+.modal-text-input:focus {
+  border-color: #38bdf8;
+}
+
+.server-status-pill {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #94a3b8;
+}
+
+.server-status-pill.online {
+  background: rgba(52, 211, 153, 0.18);
+  color: #6ee7b7;
+  border: 1px solid rgba(52, 211, 153, 0.4);
+}
+
+.server-status-pill.offline {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.transcribe-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+
+.transcribe-progress-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.transcribe-progress-rail {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.transcribe-progress-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #38bdf8, #34d399);
+  transition: width 0.18s ease;
+}
+
+.transcribe-error-box {
+  background: rgba(239, 68, 68, 0.16);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fecaca;
+  font-size: 11.5px;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.modal-primary-btn {
+  padding: 7px 14px;
+  font-weight: 600;
 }

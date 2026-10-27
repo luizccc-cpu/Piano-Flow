@@ -29,6 +29,10 @@ Built for a landscape tablet resting on your piano's music stand, KeyFlow pairs 
 * **Smart Left/Right Hand Voice Splitting:** Automatically separates single-track `.MID` files into playable Left and Right Hand parts using human hand-span constraints (10th interval limit) and voice-leading continuity.
 * **A–B Section Looping with `+5%` Tempo Ramp:** Drag the orange `‹` and `›` handles on the timeline to loop tricky measures. Enable **+5% Speed Ramp** to start slow (`0.5x`) and automatically increase speed by `+0.05x` after each clean pass.
 * **Plug-and-Play WebMIDI & `.MID` Loader:** Connect any USB or Bluetooth MIDI keyboard for live key detection and sustain pedal (`CC 64`) support, or click **Open .MID** to load any standard `.mid` / `.midi` file directly from your device.
+* **Hybrid AI Audio-to-MIDI Transcriber ("Bring Your Own Song"):** Click **AI Audio** in the top bar to convert any `.mp3`, `.wav`, `.m4a`, or `.ogg` audio file into playable, hand-separated falling piano notes:
+  * **Zero-Dependency In-Browser Polyphonic Engine:** Uses Web Audio API spectral analysis with harmonic overtone suppression directly on your iPad or browser—working 100% offline on GitHub Pages.
+  * **Optional Python FastAPI Studio AI Backend (`backend/`):** Connect over local Wi-Fi or `localhost:8000` for `HT-Demucs` piano stem separation and neural polyphonic transcription (`ByteDance Piano Transcription` / `Basic Pitch` / `Librosa CQT`).
+* **Persistent Custom Song Library & `.MID` Exporter:** Uploaded `.MID` files and AI-transcribed songs are automatically saved in `IndexedDB` across sessions on your iPad, and any song can be exported as a two-track Standard `.MID` file from the settings menu.
 
 ---
 
@@ -49,18 +53,23 @@ KeyFlow uses a clean, modular vanilla JavaScript architecture with **zero extern
 
 ```text
 Piano-Flow/
-├── index.html              # App shell, HUD controls, settings popover & transport bar
-├── manifest.json           # PWA Web App Manifest for fullscreen iPad landscape mode
+├── index.html               # App shell, HUD controls, AI Audio modal & transport bar
+├── manifest.json            # PWA Web App Manifest for fullscreen iPad landscape mode
 ├── css/
-│   └── styles.css          # Dark glassmorphic UI styling & responsive layout rules
+│   └── styles.css           # Dark glassmorphic UI styling & responsive layout rules
 ├── js/
-│   ├── songs.js            # Pitch/frequency helpers & 5 built-in song arrangements
-│   ├── midi-parser.js      # Native binary .MID file parser, smart hand splitter & auto-scaler
-│   ├── audio.js            # Web Audio Acoustic Grand (default) & Mellow Felt sound engine
-│   └── app.js              # 60 FPS canvas visualizer, Wait Mode, A-B loop & WebMIDI controller
+│   ├── songs.js             # Pitch/frequency helpers & 5 built-in song arrangements
+│   ├── midi-parser.js       # Native binary .MID file parser, smart hand splitter & auto-scaler
+│   ├── audio-transcriber.js # Hybrid AI + Web Audio polyphonic transcriber, IndexedDB & .MID exporter
+│   ├── audio.js             # Web Audio Acoustic Grand (default) & Mellow Felt sound engine
+│   └── app.js               # 60 FPS canvas visualizer, Wait Mode, A-B loop & WebMIDI controller
+├── backend/
+│   ├── server.py            # FastAPI backend (HT-Demucs + ByteDance / Basic Pitch / Librosa CQT)
+│   ├── requirements.txt     # Python backend dependencies
+│   └── README.md            # Setup & iPad Wi-Fi LAN connection guide
 └── .agents/
     └── rules/
-        └── AGENTS.md       # Workspace architecture rules & phased development roadmap
+        └── AGENTS.md        # Workspace architecture rules & phased development roadmap
 ```
 
 ---
@@ -71,7 +80,7 @@ Piano-Flow/
 Because KeyFlow has no build step or bundler dependencies, you can run it with any static file server:
 
 ```bash
-git clone [https://github.com/luizccc-cpu/Piano-Flow.git](https://github.com/luizccc-cpu/Piano-Flow.git)
+git clone https://github.com/luizccc-cpu/Piano-Flow.git
 cd Piano-Flow
 python3 -m http.server 8000
 ```

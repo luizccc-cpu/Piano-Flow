@@ -33,6 +33,13 @@
           <span>Open .MID</span>
         </label>
         <input id="midiInput" type="file" accept=".mid,.midi" style="display:none;" />
+
+        <button id="openTranscriberModalBtn" class="ui-btn ui-btn-emerald" title="Convert any MP3/WAV/M4A song into falling piano notes">
+          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/>
+          </svg>
+          <span>AI Audio</span>
+        </button>
       </div>
 
       <!-- Center Wait Mode Prompt -->
@@ -109,6 +116,15 @@
       <button id="resplitHandsBtn" class="ui-btn ui-btn-accent popover-action-btn" title="Re-run smart L/R voice separation using 10th hand-span constraints">
         <span>Re-split Hands (Smart AI)</span>
       </button>
+
+      <div class="popover-btn-row">
+        <button id="exportMidiBtn" class="ui-btn popover-action-btn" title="Download active song as a 2-track Standard MIDI (.mid) file">
+          <span>Export .MID</span>
+        </button>
+        <button id="deleteCustomSongBtn" class="ui-btn ui-btn-danger popover-action-btn" style="display:none;" title="Delete this custom song from saved library">
+          <span>Delete Song</span>
+        </button>
+      </div>
     </div>
 
     <!-- Thin Top Song Progress Strip -->
@@ -271,11 +287,98 @@
         </button>
       </div>
     </footer>
+
+    <!-- ==================== AI AUDIO TO PIANO TRANSCRIBER MODAL (PHASE 3) ==================== -->
+    <div id="transcriberModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="transcriberModalTitle">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <span class="modal-badge">PHASE 3 AI</span>
+            <h2 id="transcriberModalTitle" class="modal-title">Audio Song &rarr; Falling Piano Notes</h2>
+          </div>
+          <button id="closeTranscriberModalBtn" class="ui-btn icon-btn" title="Close" aria-label="Close Modal">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <!-- Audio File Dropzone / Picker -->
+          <label for="audioFileInput" id="audioDropZone" class="audio-dropzone">
+            <svg width="24" height="24" fill="none" stroke="#38bdf8" stroke-width="1.8" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/>
+            </svg>
+            <div class="dropzone-text">
+              <strong id="selectedAudioFileName">Tap to choose an Audio File (.MP3, .WAV, .M4A, .OGG)</strong>
+              <span id="selectedAudioFileMeta">Automatically transcribes chords &amp; melody into Left / Right hand falling notes</span>
+            </div>
+          </label>
+          <input id="audioFileInput" type="file" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,audio/*" style="display:none;" />
+
+          <!-- Engine Mode & Sensitivity Row -->
+          <div class="modal-grid-2">
+            <div class="modal-field">
+              <label for="transcribeModeSelect" class="modal-label">Transcription Engine</label>
+              <select id="transcribeModeSelect" class="ui-select" style="width:100%;">
+                <option value="auto">Auto (Python AI Server &rarr; Browser Fallback)</option>
+                <option value="browser">In-Browser Engine (Instant / Offline iPad)</option>
+                <option value="server">Python AI Server (Demucs + Neural MIDI)</option>
+              </select>
+            </div>
+
+            <div class="modal-field">
+              <div class="modal-label-row">
+                <label for="transcribeSensitivitySlider" class="modal-label">Note Density / Sensitivity</label>
+                <span id="transcribeSensitivityLabel" class="warmth-val">55%</span>
+              </div>
+              <input id="transcribeSensitivitySlider" type="range" min="15" max="85" value="55" class="range-slider" />
+            </div>
+          </div>
+
+          <!-- Python AI Backend Config Box -->
+          <div id="serverConfigBox" class="server-config-box">
+            <div class="server-config-row">
+              <div style="display:flex; align-items:center; gap:8px; flex:1;">
+                <span class="modal-label" style="white-space:nowrap;">AI Server URL:</span>
+                <input id="aiServerUrlInput" type="text" class="modal-text-input" value="http://localhost:8000" placeholder="http://192.168.1.x:8000" />
+                <button id="testAiServerBtn" type="button" class="ui-btn" style="padding:4px 9px; font-size:11.5px;">Check</button>
+              </div>
+              <span id="aiServerStatusPill" class="server-status-pill">Browser Fallback Ready</span>
+            </div>
+
+            <div class="hud-row" style="font-size:12px;">
+              <span>Isolate Piano Stem from Full Mix (<code>HT-Demucs</code> on Server)</span>
+              <button id="isolatePianoSwitch" type="button" class="switch-btn active-green" aria-label="Toggle Piano Stem Isolation">
+                <span class="switch-thumb"></span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Progress & Error Feedback -->
+          <div id="transcribeProgressWrap" class="transcribe-progress-wrap" style="display:none;">
+            <div class="transcribe-progress-header">
+              <span id="transcribeStatusText">Decoding audio...</span>
+              <strong id="transcribePercentText">0%</strong>
+            </div>
+            <div class="transcribe-progress-rail">
+              <div id="transcribeProgressFill" class="transcribe-progress-fill"></div>
+            </div>
+          </div>
+
+          <div id="transcribeErrorBox" class="transcribe-error-box" style="display:none;"></div>
+        </div>
+
+        <div class="modal-footer">
+          <button id="cancelTranscribeBtn" type="button" class="ui-btn">Cancel</button>
+          <button id="startTranscribeBtn" type="button" class="ui-btn ui-btn-emerald" disabled>
+            <span>Convert Audio to Piano Notes</span>
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Modular Application Scripts (Zero Build Step Required) -->
   <script src="js/songs.js"></script>
   <script src="js/midi-parser.js"></script>
+  <script src="js/audio-transcriber.js"></script>
   <script src="js/audio.js"></script>
   <script src="js/app.js"></script>
 </body>

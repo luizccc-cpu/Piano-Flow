@@ -14,8 +14,8 @@ description: "Core architecture, UX constraints, and phased roadmap for the Fall
 
 ## Development Phases
 - **Phase 1 (Complete):** Core visualizer, 5s horizon, auto-scaled keyboard, Mellow Felt Grand sound engine, A-B looping, Hand Isolation (L/R), Wait Mode, and `.MID` file upload.
-- **Phase 2 (Next):** 
+- **Phase 2 (Complete):** 
   - Smart A-B Loop Tempo Ramp (start loop at 50% speed and auto-increment by +5% after each clean pass).
   - Advanced Left/Right Hand voice-splitting algorithm using pitch clustering and human hand-span constraints (max 10th interval per hand) for single-track MIDI files.
   - Measure & beat gridlines synchronized to MIDI time signatures.
-- **Phase 3 (Future):** Python backend (FastAPI) running `HT-Demucs` (stem separation) + `ByteDance Piano Transcription` / `Basic Pitch` to convert any audio file or song link into an accurate, hand-separated MIDI file.
+- **Phase 3 (Complete):** Hybrid AI Audio-to-MIDI Transcription Pipeline ("Bring Your Own Song") featuring a Python FastAPI backend (`backend/server.py`) running `HT-Demucs` (stem separation) + `ByteDance Piano Transcription` / `Basic Pitch` / `Librosa CQT`, paired with an In-Browser Web Audio API Polyphonic Piano Transcriber (`js/audio-transcriber.js`), Persistent `IndexedDB` Custom Song Library, and Standard `.MID` Exporter.

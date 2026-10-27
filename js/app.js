@@ -9,11 +9,13 @@
   const calculateAutoRange = global.calculateAutoRange;
   const assignHandsSmart = global.assignHandsSmart;
   const audioEngine = global.audioEngine;
+  const audioTranscriber = global.audioTranscriber;
 
   /********************************************************************
    * APPLICATION STATE
    ********************************************************************/
   const state = {
+    activeSongId: 'let_it_be',
     song: SONGS.let_it_be,
     isPlaying: false,
     currentTime: 0,
@@ -905,10 +907,35 @@
   /********************************************************************
    * UI BINDINGS & INTERACTIVE CONTROLS
    ********************************************************************/
+  function registerCustomSongInSelect(songObj) {
+    if (!songObj || !songObj.id) return;
+    SONGS[songObj.id] = songObj;
+    const sel = document.getElementById('songSelect');
+    if (!sel) return;
+    let existingOpt = null;
+    for (let i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === songObj.id) {
+        existingOpt = sel.options[i];
+        break;
+      }
+    }
+    const labelPrefix = (songObj.source && songObj.source.indexOf('ai') === 0) ? '★ [AI] ' : '★ ';
+    const labelText = songObj.title.indexOf('★') === 0 ? songObj.title : (labelPrefix + songObj.title);
+    if (existingOpt) {
+      existingOpt.textContent = labelText;
+    } else {
+      const opt = document.createElement('option');
+      opt.value = songObj.id;
+      opt.textContent = labelText;
+      sel.appendChild(opt);
+    }
+  }
+
   function loadSongById(id) {
     const s = SONGS[id];
     if (!s) return;
     setPlaying(false);
+    state.activeSongId = id;
     state.song = s;
     state.currentTime = 0;
     state.loopA = Math.min(2.0, s.duration * 0.12);
@@ -917,6 +944,16 @@
     state.passHadLongWaitStall = false;
     state.waitStartedAtMs = null;
     document.getElementById('songTitleHeader').textContent = s.title;
+
+    const sel = document.getElementById('songSelect');
+    if (sel && sel.value !== id) {
+      sel.value = id;
+    }
+
+    const delBtn = document.getElementById('deleteCustomSongBtn');
+    if (delBtn) {
+      delBtn.style.display = s.isCustom ? 'inline-flex' : 'none';
+    }
 
     resetNoteTriggersBefore(0);
     calculateAutoRange(state);
@@ -943,14 +980,15 @@
       try {
         const parsed = parseStandardMidiFile(ev.target.result, file.name);
         const id = 'midi_' + Date.now();
-        SONGS[id] = parsed;
-        const sel = document.getElementById('songSelect');
-        const opt = document.createElement('option');
-        opt.value = id;
-        opt.textContent = parsed.title;
-        sel.appendChild(opt);
-        sel.value = id;
+        parsed.id = id;
+        parsed.isCustom = true;
+        parsed.source = 'midi-upload';
+        parsed.createdAt = Date.now();
+        registerCustomSongInSelect(parsed);
         loadSongById(id);
+        if (audioTranscriber && audioTranscriber.customSongStore) {
+          audioTranscriber.customSongStore.saveSong(parsed);
+        }
       } catch (err) {
         console.warn('MIDI parse error:', err);
       }
@@ -1189,12 +1227,288 @@
     resplitHandsBtn.addEventListener('click', function () {
       if (state.song && Array.isArray(state.song.notes)) {
         assignHandsSmart(state.song.notes);
+        if (state.song.isCustom && audioTranscriber && audioTranscriber.customSongStore) {
+          audioTranscriber.customSongStore.saveSong(state.song);
+        }
         const span = resplitHandsBtn.querySelector('span') || resplitHandsBtn;
         const origText = 'Re-split Hands (Smart AI)';
         span.textContent = '✓ Hands Re-split (Smart AI)';
         setTimeout(function () {
           span.textContent = origText;
         }, 1400);
+      }
+    });
+  }
+
+  // Export Active Song as Standard .MID File (Format 1 with L/R Hand Tracks)
+  const exportMidiBtn = document.getElementById('exportMidiBtn');
+  if (exportMidiBtn) {
+    exportMidiBtn.addEventListener('click', function () {
+      if (!state.song || !audioTranscriber) return;
+      try {
+        const blob = audioTranscriber.exportSongToMidiBlob(state.song);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const safeName = String(state.song.title || 'KeyFlow_Song')
+          .replace(/[^a-zA-Z0-9_\-\s]/g, '')
+          .trim()
+          .replace(/\s+/g, '_') || 'KeyFlow_Song';
+        a.href = url;
+        a.download = safeName + '.mid';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 3000);
+      } catch (err) {
+        console.warn('MIDI Export error:', err);
+      }
+    });
+  }
+
+  // Delete Custom / Transcribed Song from Persistent Library
+  const deleteCustomSongBtn = document.getElementById('deleteCustomSongBtn');
+  if (deleteCustomSongBtn) {
+    deleteCustomSongBtn.addEventListener('click', function () {
+      const curId = state.activeSongId;
+      const curSong = SONGS[curId];
+      if (!curSong || !curSong.isCustom) return;
+      if (audioTranscriber && audioTranscriber.customSongStore) {
+        audioTranscriber.customSongStore.deleteSong(curId);
+      }
+      delete SONGS[curId];
+      const sel = document.getElementById('songSelect');
+      if (sel) {
+        for (let i = sel.options.length - 1; i >= 0; i--) {
+          if (sel.options[i].value === curId) {
+            sel.remove(i);
+          }
+        }
+      }
+      loadSongById('let_it_be');
+      settingsPopover.classList.remove('open');
+    });
+  }
+
+  /********************************************************************
+   * PHASE 3: AI AUDIO-TO-MIDI TRANSCRIBER MODAL ("BRING YOUR OWN SONG")
+   ********************************************************************/
+  const transcriberModal = document.getElementById('transcriberModal');
+  const openTranscriberModalBtn = document.getElementById('openTranscriberModalBtn');
+  const closeTranscriberModalBtn = document.getElementById('closeTranscriberModalBtn');
+  const cancelTranscribeBtn = document.getElementById('cancelTranscribeBtn');
+  const audioDropzone = document.getElementById('audioDropzone');
+  const audioFileInput = document.getElementById('audioFileInput');
+  const dropzonePrimaryText = document.getElementById('dropzonePrimaryText');
+  const transcribeEngineSelect = document.getElementById('transcribeEngineSelect');
+  const transcribeSensitivitySlider = document.getElementById('transcribeSensitivitySlider');
+  const sensitivityValueLabel = document.getElementById('sensitivityValueLabel');
+  const serverConfigBox = document.getElementById('serverConfigBox');
+  const aiServerUrlInput = document.getElementById('aiServerUrlInput');
+  const testAiServerBtn = document.getElementById('testAiServerBtn');
+  const serverStatusPill = document.getElementById('serverStatusPill');
+  const isolatePianoSwitch = document.getElementById('isolatePianoSwitch');
+  const transcribeProgressWrap = document.getElementById('transcribeProgressWrap');
+  const transcribeStageText = document.getElementById('transcribeStageText');
+  const transcribePercentText = document.getElementById('transcribePercentText');
+  const transcribeProgressFill = document.getElementById('transcribeProgressFill');
+  const transcribeErrorBox = document.getElementById('transcribeErrorBox');
+  const startTranscribeBtn = document.getElementById('startTranscribeBtn');
+
+  let selectedAudioFile = null;
+  let isolatePianoStem = true;
+  let isTranscribing = false;
+
+  try {
+    const savedServerUrl = localStorage.getItem('keyflow_ai_server_url');
+    if (savedServerUrl && aiServerUrlInput) {
+      aiServerUrlInput.value = savedServerUrl;
+    }
+  } catch (e) {}
+
+  function setTranscriberModalOpen(open) {
+    if (!transcriberModal) return;
+    transcriberModal.classList.toggle('open', !!open);
+    transcriberModal.setAttribute('aria-hidden', open ? 'false' : 'true');
+    if (open) {
+      setPlaying(false);
+      refreshServerHealthStatus();
+    }
+  }
+
+  function updateSelectedAudioFile(file) {
+    selectedAudioFile = file || null;
+    if (transcribeErrorBox) {
+      transcribeErrorBox.style.display = 'none';
+      transcribeErrorBox.textContent = '';
+    }
+    if (selectedAudioFile) {
+      if (audioDropzone) audioDropzone.classList.add('has-file');
+      const sizeMb = (selectedAudioFile.size / (1024 * 1024)).toFixed(1);
+      if (dropzonePrimaryText) {
+        dropzonePrimaryText.innerHTML = 'Selected: <strong>' + selectedAudioFile.name + '</strong> (' + sizeMb + ' MB)';
+      }
+      if (startTranscribeBtn && !isTranscribing) {
+        startTranscribeBtn.disabled = false;
+      }
+    } else {
+      if (audioDropzone) audioDropzone.classList.remove('has-file');
+      if (dropzonePrimaryText) {
+        dropzonePrimaryText.innerHTML = 'Tap to choose an <strong>.MP3, .WAV, .M4A, or .OGG</strong> song';
+      }
+      if (startTranscribeBtn) {
+        startTranscribeBtn.disabled = true;
+      }
+    }
+  }
+
+  async function refreshServerHealthStatus() {
+    if (!audioTranscriber || !aiServerUrlInput || !serverStatusPill) return;
+    const url = aiServerUrlInput.value.trim();
+    try {
+      localStorage.setItem('keyflow_ai_server_url', url);
+    } catch (e) {}
+    serverStatusPill.className = 'server-status-pill';
+    serverStatusPill.textContent = 'Checking...';
+    const status = await audioTranscriber.checkServerHealth(url, 1600);
+    if (status.ok) {
+      serverStatusPill.className = 'server-status-pill online';
+      const engines = (status.info && Array.isArray(status.info.engines)) ? status.info.engines.join(' + ') : 'Ready';
+      serverStatusPill.textContent = 'Online (' + engines + ')';
+    } else {
+      serverStatusPill.className = 'server-status-pill offline';
+      serverStatusPill.textContent = 'Offline (Browser Engine Ready)';
+    }
+  }
+
+  if (openTranscriberModalBtn) {
+    openTranscriberModalBtn.addEventListener('click', function () {
+      setTranscriberModalOpen(true);
+    });
+  }
+  if (closeTranscriberModalBtn) {
+    closeTranscriberModalBtn.addEventListener('click', function () {
+      if (!isTranscribing) setTranscriberModalOpen(false);
+    });
+  }
+  if (cancelTranscribeBtn) {
+    cancelTranscribeBtn.addEventListener('click', function () {
+      if (!isTranscribing) setTranscriberModalOpen(false);
+    });
+  }
+  if (transcriberModal) {
+    transcriberModal.addEventListener('click', function (e) {
+      if (e.target === transcriberModal && !isTranscribing) {
+        setTranscriberModalOpen(false);
+      }
+    });
+  }
+
+  if (audioDropzone && audioFileInput) {
+    audioDropzone.addEventListener('click', function () {
+      if (!isTranscribing) audioFileInput.click();
+    });
+    audioDropzone.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      audioDropzone.classList.add('dragover');
+    });
+    audioDropzone.addEventListener('dragleave', function () {
+      audioDropzone.classList.remove('dragover');
+    });
+    audioDropzone.addEventListener('drop', function (e) {
+      e.preventDefault();
+      audioDropzone.classList.remove('dragover');
+      if (isTranscribing) return;
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) updateSelectedAudioFile(f);
+    });
+    audioFileInput.addEventListener('change', function (e) {
+      const f = e.target.files && e.target.files[0];
+      if (f) updateSelectedAudioFile(f);
+    });
+  }
+
+  if (transcribeEngineSelect && serverConfigBox) {
+    transcribeEngineSelect.addEventListener('change', function () {
+      serverConfigBox.style.display = (transcribeEngineSelect.value === 'browser') ? 'none' : 'flex';
+    });
+  }
+
+  if (transcribeSensitivitySlider && sensitivityValueLabel) {
+    transcribeSensitivitySlider.addEventListener('input', function () {
+      sensitivityValueLabel.textContent = transcribeSensitivitySlider.value + '%';
+    });
+  }
+
+  if (isolatePianoSwitch) {
+    isolatePianoSwitch.addEventListener('click', function () {
+      isolatePianoStem = !isolatePianoStem;
+      isolatePianoSwitch.classList.toggle('active-green', isolatePianoStem);
+      isolatePianoSwitch.setAttribute('aria-checked', isolatePianoStem ? 'true' : 'false');
+    });
+  }
+
+  if (testAiServerBtn) {
+    testAiServerBtn.addEventListener('click', function () {
+      refreshServerHealthStatus();
+    });
+  }
+
+  if (startTranscribeBtn) {
+    startTranscribeBtn.addEventListener('click', async function () {
+      if (!selectedAudioFile || isTranscribing || !audioTranscriber) return;
+      isTranscribing = true;
+      startTranscribeBtn.disabled = true;
+      if (transcribeErrorBox) transcribeErrorBox.style.display = 'none';
+      if (transcribeProgressWrap) transcribeProgressWrap.style.display = 'flex';
+
+      const engineMode = transcribeEngineSelect ? transcribeEngineSelect.value : 'auto';
+      const sensitivity = transcribeSensitivitySlider
+        ? (parseInt(transcribeSensitivitySlider.value, 10) / 100)
+        : 0.55;
+      const serverUrl = aiServerUrlInput ? aiServerUrlInput.value.trim() : 'http://localhost:8000';
+
+      try {
+        const songObj = await audioTranscriber.transcribeAudioFile(
+          selectedAudioFile,
+          {
+            engineMode: engineMode,
+            serverUrl: serverUrl,
+            isolatePiano: isolatePianoStem,
+            sensitivity: sensitivity
+          },
+          function (prog) {
+            if (transcribeStageText && prog.stage) transcribeStageText.textContent = prog.stage;
+            if (typeof prog.percent === 'number') {
+              const p = Math.max(0, Math.min(100, Math.round(prog.percent)));
+              if (transcribePercentText) transcribePercentText.textContent = p + '%';
+              if (transcribeProgressFill) transcribeProgressFill.style.width = p + '%';
+            }
+          }
+        );
+
+        const id = 'ai_' + Date.now();
+        songObj.id = id;
+        songObj.isCustom = true;
+        songObj.createdAt = Date.now();
+
+        registerCustomSongInSelect(songObj);
+        loadSongById(id);
+
+        if (audioTranscriber.customSongStore) {
+          await audioTranscriber.customSongStore.saveSong(songObj);
+        }
+
+        isTranscribing = false;
+        if (transcribeProgressWrap) transcribeProgressWrap.style.display = 'none';
+        startTranscribeBtn.disabled = false;
+        setTranscriberModalOpen(false);
+      } catch (err) {
+        isTranscribing = false;
+        startTranscribeBtn.disabled = false;
+        if (transcribeErrorBox) {
+          transcribeErrorBox.style.display = 'block';
+          transcribeErrorBox.textContent = (err && err.message) ? err.message : 'Could not transcribe audio file.';
+        }
       }
     });
   }
@@ -1296,6 +1610,18 @@
   syncViewportHeight();
   syncHandIsolationUI();
   loadSongById('let_it_be');
+  if (audioTranscriber && audioTranscriber.customSongStore) {
+    audioTranscriber.customSongStore.getAllSongs().then(function (savedList) {
+      if (Array.isArray(savedList)) {
+        savedList.forEach(function (item) {
+          if (item && item.id && Array.isArray(item.notes) && item.notes.length > 0) {
+            item.isCustom = true;
+            registerCustomSongInSelect(item);
+          }
+        });
+      }
+    }).catch(function () {});
+  }
   setTimeout(handleViewportResize, 120);
   requestAnimationFrame(tickLoop);
 })(window);
