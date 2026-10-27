@@ -73,18 +73,28 @@
   let strikeY = 365;
   let keyboardH = 135;
 
+  function syncViewportHeight() {
+    const appShell = document.getElementById('appShell');
+    if (!appShell) return;
+    const vh = (window.visualViewport && window.visualViewport.height > 100)
+      ? window.visualViewport.height
+      : (window.innerHeight || 0);
+    if (vh > 100) {
+      appShell.style.height = Math.round(vh) + 'px';
+    }
+  }
+
   function rebuildKeyboardGeometry() {
     const rect = stageEl ? stageEl.getBoundingClientRect() : { width: 960, height: 500 };
-    // Fallback to 960x500 if iframe hasn't finished layout yet
     width = (rect.width > 100) ? rect.width : (window.innerWidth || 960);
-    height = (rect.height > 150) ? rect.height : Math.max(460, (window.innerHeight || 640) - 106);
+    height = (rect.height > 80) ? rect.height : Math.max(240, (window.innerHeight || 500) - 106);
 
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    keyboardH = Math.max(120, Math.min(185, height * 0.25));
+    keyboardH = Math.round(Math.max(96, Math.min(165, height * 0.24)));
     strikeY = height - keyboardH;
 
     const whiteMidis = [];
@@ -1214,8 +1224,21 @@
     dragTarget = null;
   });
 
-  // Responsive Canvas Resize Listeners (with ResizeObserver for Google Sites iframes)
-  window.addEventListener('resize', rebuildKeyboardGeometry);
+  // Responsive Canvas Resize Listeners (with visualViewport & ResizeObserver for iPad Safari/Chrome)
+  function handleViewportResize() {
+    syncViewportHeight();
+    rebuildKeyboardGeometry();
+  }
+
+  window.addEventListener('resize', handleViewportResize);
+  window.addEventListener('orientationchange', function () {
+    setTimeout(handleViewportResize, 80);
+  });
+  try {
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', handleViewportResize);
+    }
+  } catch (e) {}
   try {
     if (window.ResizeObserver && stageEl) {
       const ro = new ResizeObserver(function () {
@@ -1226,8 +1249,9 @@
   } catch (e) {}
 
   // Startup Initialization
+  syncViewportHeight();
   syncHandIsolationUI();
   loadSongById('let_it_be');
-  setTimeout(rebuildKeyboardGeometry, 120);
+  setTimeout(handleViewportResize, 120);
   requestAnimationFrame(tickLoop);
 })(window);
