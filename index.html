@@ -119,85 +119,99 @@
     <!-- ==================== MAIN STAGE (5s RUNWAY + PIANO) ==================== -->
     <main class="stage-container" id="stageContainer">
       <!-- Floating Left Practice & Sound HUD (Matches Approved iPad UI) -->
-      <aside class="hud-panel">
-        <!-- Speed Row -->
-        <div class="hud-row">
-          <div class="hud-label">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="color:#cbd5e1;">
-              <path d="M8 5v14l11-7z"/>
+      <aside id="hudPanel" class="hud-panel">
+        <div class="hud-header-bar" id="hudHeaderBar">
+          <div class="hud-header-left">
+            <span class="hud-header-title">Controls</span>
+            <span id="hudMiniSummary" class="hud-mini-summary">1.0x</span>
+          </div>
+          <button id="hudToggleBtn" class="hud-collapse-btn" title="Minimize / Expand Controls (Shortcut: Q or M)" aria-label="Toggle Controls Panel">
+            <svg id="hudToggleIcon" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
             </svg>
-            <span>Speed</span>
-          </div>
-          <button id="speedBtn" class="speed-pill" title="Click to cycle playback speed">1.0x</button>
-        </div>
-
-        <!-- Wait Mode Row -->
-        <div class="hud-row">
-          <div class="hud-label">
-            <span id="waitOrb" class="status-orb orb-blue orb-dim"></span>
-            <span>Wait Mode</span>
-          </div>
-          <button id="waitSwitch" class="switch-btn" role="switch" aria-checked="false" title="Pause falling notes at NOW line until you play them">
-            <span class="switch-thumb"></span>
           </button>
         </div>
 
-        <!-- Hand Isolation Row -->
-        <div class="hud-row">
-          <div class="hud-label">
-            <span id="handOrb" class="status-orb orb-green orb-dim"></span>
-            <span>Hand Isolation</span>
-          </div>
-          <button id="handIsoSwitch" class="switch-btn" role="switch" aria-checked="false" title="Toggle Hand Isolation">
-            <span class="switch-thumb"></span>
-          </button>
-        </div>
-
-        <div class="hand-pills-row">
-          <button id="leftHandBtn" class="hand-pill hand-pill-l inactive" title="Toggle Left Hand (Blue)">L</button>
-          <button id="rightHandBtn" class="hand-pill hand-pill-r inactive" title="Toggle Right Hand (Green)">R</button>
-        </div>
-
-        <div class="hud-divider"></div>
-
-        <!-- Sound Preset Selector (Matching iPad Mockup) -->
-        <button id="soundCollapseBtn" class="sound-header-btn">
-          <span>Sound</span>
-          <svg id="soundChevron" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color:#94a3b8; transition: transform 0.2s;">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-          </svg>
-        </button>
-
-        <div id="soundSectionBody" style="display:flex; flex-direction:column; gap:9px;">
-          <div class="sound-list-box">
-            <button class="sound-option-btn selected" data-preset="acoustic_grand">
-              <span class="check-mark">✓</span>
-              <span>Acoustic Grand Piano</span>
-            </button>
-            <button class="sound-option-btn" data-preset="mellow_felt">
-              <span class="check-mark">✓</span>
-              <span>Mellow Felt Grand</span>
-            </button>
-            <button class="sound-option-btn" data-preset="warm_upright">
-              <span class="check-mark">✓</span>
-              <span>Warm Vintage Upright</span>
-            </button>
-            <button class="sound-option-btn" data-preset="electric_piano">
-              <span class="check-mark">✓</span>
-              <span>Warm Electric Piano</span>
-            </button>
-          </div>
-
-          <div class="warmth-box">
-            <div class="warmth-header">
-              <span>Felt Softness / Warmth</span>
-              <span id="warmthLabel" class="warmth-val">24%</span>
+        <div id="hudBody" class="hud-body">
+          <!-- Speed Row -->
+          <div class="hud-row">
+            <div class="hud-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="color:#cbd5e1;">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+              <span>Speed</span>
             </div>
-            <input id="warmthSlider" type="range" min="0" max="100" value="24" class="range-slider" />
+            <button id="speedBtn" class="speed-pill" title="Click to cycle playback speed">1.0x</button>
           </div>
 
-          <div class="sample-caption">
-            <span id="engineStatusText">Sample Quality: High (Default)</span>
+          <!-- Wait Mode Row -->
+          <div class="hud-row">
+            <div class="hud-label">
+              <span id="waitOrb" class="status-orb orb-blue orb-dim"></span>
+              <span>Wait Mode</span>
+            </div>
+            <button id="waitSwitch" class="switch-btn" role="switch" aria-checked="false" title="Pause falling notes at NOW line until you play them">
+              <span class="switch-thumb"></span>
+            </button>
+          </div>
+
+          <!-- Hand Isolation Row -->
+          <div class="hud-row">
+            <div class="hud-label">
+              <span id="handOrb" class="status-orb orb-green orb-dim"></span>
+              <span>Hand Isolation</span>
+            </div>
+            <button id="handIsoSwitch" class="switch-btn" role="switch" aria-checked="false" title="Toggle Hand Isolation">
+              <span class="switch-thumb"></span>
+            </button>
+          </div>
+
+          <div class="hand-pills-row">
+            <button id="leftHandBtn" class="hand-pill hand-pill-l inactive" title="Toggle Left Hand (Blue)">L</button>
+            <button id="rightHandBtn" class="hand-pill hand-pill-r inactive" title="Toggle Right Hand (Green)">R</button>
+          </div>
+
+          <div class="hud-divider"></div>
+
+          <!-- Sound Preset Selector (Matching iPad Mockup) -->
+          <button id="soundCollapseBtn" class="sound-header-btn">
+            <span>Sound</span>
+            <svg id="soundChevron" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color:#94a3b8; transition: transform 0.2s;">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+            </svg>
+          </button>
+
+          <div id="soundSectionBody" style="display:flex; flex-direction:column; gap:9px;">
+            <div class="sound-list-box">
+              <button class="sound-option-btn selected" data-preset="acoustic_grand">
+                <span class="check-mark">✓</span>
+                <span>Acoustic Grand Piano</span>
+              </button>
+              <button class="sound-option-btn" data-preset="mellow_felt">
+                <span class="check-mark">✓</span>
+                <span>Mellow Felt Grand</span>
+              </button>
+              <button class="sound-option-btn" data-preset="warm_upright">
+                <span class="check-mark">✓</span>
+                <span>Warm Vintage Upright</span>
+              </button>
+              <button class="sound-option-btn" data-preset="electric_piano">
+                <span class="check-mark">✓</span>
+                <span>Warm Electric Piano</span>
+              </button>
+            </div>
+
+            <div class="warmth-box">
+              <div class="warmth-header">
+                <span>Felt Softness / Warmth</span>
+                <span id="warmthLabel" class="warmth-val">24%</span>
+              </div>
+              <input id="warmthSlider" type="range" min="0" max="100" value="24" class="range-slider" />
+            </div>
+
+            <div class="sample-caption">
+              <span id="engineStatusText">Sample Quality: High (Default)</span>
+            </div>
           </div>
         </div>
       </aside>

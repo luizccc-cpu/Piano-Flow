@@ -34,6 +34,7 @@
     rangeMode: 'auto', // 'auto' | 'compact' | 'full88'
     showMeasureGrid: true,
     showAllKeyNames: false,
+    hudMinimized: false,
 
     loopEnabled: false,
     loopA: 3.0,
@@ -660,7 +661,10 @@
       state.loopPassCount++;
       if (state.speedRamp && !state.passHadLongWaitStall && state.speed < state.targetRampSpeed) {
         state.speed = Math.min(state.targetRampSpeed, Math.round((state.speed + 0.05) * 100) / 100);
-        document.getElementById('speedBtn').textContent = formatSpeedBadge(state.speed);
+        const speedStr = formatSpeedBadge(state.speed);
+        document.getElementById('speedBtn').textContent = speedStr;
+        const miniSum = document.getElementById('hudMiniSummary');
+        if (miniSum) miniSum.textContent = speedStr;
       }
       state.passHadLongWaitStall = false;
       state.waitStartedAtMs = null;
@@ -819,6 +823,10 @@
       return;
     }
     const k = String(e.key || '').toLowerCase();
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && (k === 'q' || k === 'm')) {
+      setHudMinimized(!state.hudMinimized);
+      return;
+    }
     if (KEY_OFFSETS[k] !== undefined && !heldKeys[k]) {
       heldKeys[k] = true;
       userNoteOn(60 + KEY_OFFSETS[k], 0.82);
@@ -952,7 +960,35 @@
     seekTo(state.loopEnabled ? state.loopA : 0);
   });
 
-  // Speed Selector
+  // Speed Selector & Collapsible HUD Panel
+  const hudPanel = document.getElementById('hudPanel');
+  const hudToggleBtn = document.getElementById('hudToggleBtn');
+  const hudMiniSummary = document.getElementById('hudMiniSummary');
+
+  function setHudMinimized(minimized) {
+    state.hudMinimized = !!minimized;
+    if (hudPanel) {
+      hudPanel.classList.toggle('minimized', state.hudMinimized);
+    }
+    if (hudMiniSummary) {
+      hudMiniSummary.textContent = formatSpeedBadge(state.speed);
+    }
+  }
+
+  if (hudToggleBtn) {
+    hudToggleBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      setHudMinimized(!state.hudMinimized);
+    });
+  }
+  if (hudPanel) {
+    hudPanel.addEventListener('click', function () {
+      if (state.hudMinimized) {
+        setHudMinimized(false);
+      }
+    });
+  }
+
   const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5];
   document.getElementById('speedBtn').addEventListener('click', function (e) {
     let nextIdx = 0;
@@ -963,7 +999,9 @@
       }
     }
     state.speed = SPEEDS[nextIdx];
-    e.currentTarget.textContent = formatSpeedBadge(state.speed);
+    const speedStr = formatSpeedBadge(state.speed);
+    e.currentTarget.textContent = speedStr;
+    if (hudMiniSummary) hudMiniSummary.textContent = speedStr;
     syncLoopUI();
   });
 

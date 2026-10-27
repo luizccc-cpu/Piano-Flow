@@ -258,12 +258,107 @@ html, body {
   -webkit-backdrop-filter: blur(18px);
   border: 1px solid var(--border-subtle);
   border-radius: 16px;
-  padding: 13px 14px;
+  padding: 11px 14px 13px 14px;
   z-index: 20;
   box-shadow: 0 18px 40px -12px rgba(0, 0, 0, 0.75);
   display: flex;
   flex-direction: column;
+  gap: 10px;
+  transition: padding 0.18s ease, border-radius 0.18s ease, background 0.18s ease;
+}
+
+.hud-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.hud-header-left {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.hud-header-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+}
+
+.hud-mini-summary {
+  display: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #38bdf8;
+}
+
+.hud-collapse-btn {
+  width: 26px;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e2e8f0;
+  border-radius: 7px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all 0.15s ease;
+}
+
+.hud-collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+
+#hudToggleIcon {
+  transition: transform 0.2s ease;
+}
+
+.hud-body {
+  display: flex;
+  flex-direction: column;
   gap: 11px;
+}
+
+#hudPanel.minimized {
+  width: auto;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(16, 23, 38, 0.72);
+  cursor: pointer;
+}
+
+#hudPanel.minimized .hud-header-bar {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+#hudPanel.minimized .hud-header-title {
+  color: #e2e8f0;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+#hudPanel.minimized .hud-mini-summary {
+  display: inline-block;
+}
+
+#hudPanel.minimized #hudToggleIcon {
+  transform: rotate(180deg);
+}
+
+#hudPanel.minimized .hud-body {
+  display: none;
 }
 
 .hud-row {
