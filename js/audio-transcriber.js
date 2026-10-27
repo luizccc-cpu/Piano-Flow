@@ -574,7 +574,11 @@
     }
 
     // Sensitivity mapping (0..100, default 55)
-    const sens = Math.max(10, Math.min(90, Number(options.sensitivity) || 55));
+    let rawSens = Number(options.sensitivity);
+    if (!isNaN(rawSens) && rawSens > 0 && rawSens <= 1) {
+      rawSens = Math.round(rawSens * 100);
+    }
+    const sens = Math.max(10, Math.min(90, rawSens || 55));
     const normSens = (sens - 10) / 80; // 0..1
     const activationThreshold = globalMaxMag * (0.28 - normSens * 0.17); // ~0.11..0.28 of peak
     const sustainThreshold = activationThreshold * 0.58;
@@ -729,8 +733,18 @@
    * 5. UNIFIED HYBRID TRANSCRIPTION ENTRY POINT
    ********************************************************************/
   async function transcribeAudioFile(file, options = {}, onProgress) {
-    const mode = options.mode || 'auto'; // 'auto' | 'browser' | 'server'
+    const mode = options.mode || options.engineMode || 'auto'; // 'auto' | 'browser' | 'server'
     const serverUrl = normalizeServerUrl(options.serverUrl || 'http://localhost:8000');
+    let normSensitivity = Number(options.sensitivity);
+    if (!isNaN(normSensitivity) && normSensitivity > 0 && normSensitivity <= 1) {
+      normSensitivity = Math.round(normSensitivity * 100);
+    }
+    const normalizedOptions = {
+      ...options,
+      mode: mode,
+      serverUrl: serverUrl,
+      sensitivity: normSensitivity || 55
+    };
 
     if (mode === 'server' || mode === 'auto') {
       if (onProgress) {
@@ -738,7 +752,7 @@
       }
       const health = await checkServerHealth(serverUrl, 2200);
       if (health.ok) {
-        return await transcribeViaPythonServer(file, { ...options, serverUrl }, onProgress);
+        return await transcribeViaPythonServer(file, normalizedOptions, onProgress);
       } else if (mode === 'server') {
         throw new Error(
           'Python AI Server at ' + serverUrl + ' is offline. Start backend/server.py or switch Engine Mode to Auto / In-Browser.'
@@ -746,7 +760,7 @@
       }
     }
 
-    return await transcribeInBrowser(file, options, onProgress);
+    return await transcribeInBrowser(file, normalizedOptions, onProgress);
   }
 
   global.audioTranscriber = {
