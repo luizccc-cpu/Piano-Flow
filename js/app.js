@@ -77,6 +77,12 @@
   function syncViewportHeight() {
     const appShell = document.getElementById('appShell');
     if (!appShell) return;
+    const isStandalone = window.navigator.standalone === true ||
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+    if (isStandalone) {
+      appShell.style.height = '100%';
+      return;
+    }
     const vh = (window.visualViewport && window.visualViewport.height > 100)
       ? window.visualViewport.height
       : (window.innerHeight || 0);

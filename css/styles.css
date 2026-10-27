@@ -33,13 +33,12 @@ html, body {
   overflow: hidden;
 }
 
-/* Main App Container - Fits visible iPad browser viewport without clipping */
+/* Main App Container - Fits visible iPad browser & standalone viewport without clipping */
 #appShell {
-  position: relative;
+  position: fixed;
+  inset: 0;
   width: 100%;
   height: 100%;
-  height: 100dvh;
-  max-height: 100dvh;
   min-width: 320px;
   display: flex;
   flex-direction: column;
@@ -49,10 +48,12 @@ html, body {
 
 /* ==================== TOP HEADER BAR ==================== */
 .top-bar {
-  height: 50px;
-  min-height: 50px;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: max(16px, env(safe-area-inset-left, 16px));
+  padding-right: max(16px, env(safe-area-inset-right, 16px));
+  height: calc(50px + env(safe-area-inset-top, 0px));
+  min-height: calc(50px + env(safe-area-inset-top, 0px));
   flex-shrink: 0;
-  padding: 0 16px;
   background: rgba(9, 13, 22, 0.92);
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
@@ -616,7 +617,7 @@ html, body {
 #settingsPopover {
   display: none;
   position: absolute;
-  top: 54px;
+  top: calc(54px + env(safe-area-inset-top, 0px));
   right: 16px;
   width: 276px;
   background: rgba(15, 23, 42, 0.96);
@@ -681,9 +682,9 @@ html, body {
 /* ==================== BOTTOM TRANSPORT & A-B LOOP BAR ==================== */
 .bottom-bar {
   flex-shrink: 0;
-  height: calc(54px + env(safe-area-inset-bottom, 0px));
+  height: 54px;
   min-height: 54px;
-  padding: 0 16px env(safe-area-inset-bottom, 0px) 16px;
+  padding: 0 max(16px, env(safe-area-inset-right, 16px)) 0 max(16px, env(safe-area-inset-left, 16px));
   background: rgba(9, 13, 22, 0.95);
   border-top: 1px solid var(--border-subtle);
   display: flex;
