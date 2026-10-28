@@ -90,6 +90,7 @@
     editorTool: 'select', // 'select' | 'add' | 'delete'
     editorSnapBeats: 0.25, // 0 | 0.25 | 0.125 | 0.0625
     selectedNoteIndex: -1,
+    isCloningNote: false,
     undoStack: [],
     redoStack: [],
 
@@ -982,6 +983,8 @@
 
   function syncEditorInspectorUI() {
     const labelEl = document.getElementById('inspectorNoteLabel');
+    const mergeBtn = document.getElementById('inspectorMergeBtn');
+    const cloneBtn = document.getElementById('inspectorCloneBtn');
     const handBtn = document.getElementById('inspectorHandBtn');
     const semiDownBtn = document.getElementById('inspectorSemiDownBtn');
     const semiUpBtn = document.getElementById('inspectorSemiUpBtn');
@@ -998,8 +1001,15 @@
     const note = (idx >= 0 && idx < state.song.notes.length) ? state.song.notes[idx] : null;
 
     if (!note) {
+      state.isCloningNote = false;
       if (labelEl) {
         labelEl.textContent = 'Tap a note to inspect/edit • Drag empty runway to scroll time';
+      }
+      if (mergeBtn) mergeBtn.disabled = true;
+      if (cloneBtn) {
+        cloneBtn.disabled = true;
+        cloneBtn.classList.remove('active');
+        cloneBtn.textContent = '⧉ Copy to Key';
       }
       if (handBtn) {
         handBtn.disabled = true;
@@ -1014,7 +1024,17 @@
     }
 
     if (labelEl) {
-      labelEl.textContent = note.name + ' (MIDI ' + note.midi + ') • Start: ' + note.time.toFixed(2) + 's • Len: ' + note.duration.toFixed(2) + 's';
+      if (state.isCloningNote) {
+        labelEl.textContent = 'Copy Mode: Tap any piano key or runway lane to place copy';
+      } else {
+        labelEl.textContent = note.name + ' (MIDI ' + note.midi + ') • Start: ' + note.time.toFixed(2) + 's • Len: ' + note.duration.toFixed(2) + 's';
+      }
+    }
+    if (mergeBtn) mergeBtn.disabled = false;
+    if (cloneBtn) {
+      cloneBtn.disabled = false;
+      cloneBtn.classList.toggle('active', !!state.isCloningNote);
+      cloneBtn.textContent = state.isCloningNote ? 'Tap Target Key...' : '⧉ Copy to Key';
     }
     if (handBtn) {
       handBtn.disabled = false;
@@ -1122,6 +1142,50 @@
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     const hitKey = hitTestPiano(x, y);
+
+    // Edit Mode Copy-to-Key (Chord / Interval Builder): works on both virtual piano keys and runway lanes
+    if (state.viewMode === 'edit' && state.isCloningNote && state.selectedNoteIndex >= 0 && state.selectedNoteIndex < state.song.notes.length) {
+      if (hitKey !== null || y < strikeY) {
+        const srcNote = state.song.notes[state.selectedNoteIndex];
+        const targetMidi = hitKey !== null ? hitKey : xToNearestMidi(x);
+        pushUndoSnapshot();
+
+        let targetRef = null;
+        for (let i = 0; i < state.song.notes.length; i++) {
+          const existing = state.song.notes[i];
+          if (existing.midi === targetMidi && Math.abs(existing.time - srcNote.time) < 0.01) {
+            existing.duration = srcNote.duration;
+            existing.hand = srcNote.hand || (targetMidi < 60 ? 'L' : 'R');
+            existing.velocity = srcNote.velocity || 0.8;
+            targetRef = existing;
+            break;
+          }
+        }
+
+        if (!targetRef) {
+          targetRef = {
+            midi: targetMidi,
+            name: midiToName(targetMidi),
+            time: srcNote.time,
+            duration: srcNote.duration,
+            hand: srcNote.hand || (targetMidi < 60 ? 'L' : 'R'),
+            velocity: srcNote.velocity || 0.8
+          };
+          state.song.notes.push(targetRef);
+        }
+
+        const previewDur = Math.min(0.9, Math.max(0.25, srcNote.duration));
+        audioEngine.playNote(srcNote.midi, previewDur, srcNote.velocity || 0.8);
+        if (targetMidi !== srcNote.midi) {
+          audioEngine.playNote(targetMidi, previewDur, srcNote.velocity || 0.8);
+        }
+
+        state.isCloningNote = false;
+        commitSongEdit(targetRef);
+        return;
+      }
+    }
+
     if (hitKey !== null) {
       try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
       pointerMidis[e.pointerId] = hitKey;
@@ -1274,8 +1338,12 @@
           audioEngine.playNote(newMidi, 0.3, note.velocity || 0.8);
         }
 
-        const rawNewTime = editDrag.origTime - (dy / pxPerSec);
-        note.time = snapTimeToGrid(rawNewTime);
+        if (Math.abs(dy) >= 10) {
+          const rawNewTime = editDrag.origTime - (dy / pxPerSec);
+          note.time = snapTimeToGrid(rawNewTime);
+        } else {
+          note.time = editDrag.origTime;
+        }
         syncEditorInspectorUI();
       } else if (editDrag.mode === 'resize') {
         if (!editDrag.undoPushed) {
@@ -1547,8 +1615,44 @@
       const card = document.createElement('div');
       card.className = 'song-card';
 
-      const topDiv = document.createElement('div');
-      topDiv.className = 'song-card-top';
+      // Compact Top Row: Clickable Song Title (expands details) + Play Button
+      const mainRow = document.createElement('div');
+      mainRow.className = 'song-card-main';
+
+      const titleToggle = document.createElement('div');
+      titleToggle.className = 'song-card-title-toggle';
+      titleToggle.title = 'Tap to expand song details & options';
+
+      const chevronEl = document.createElement('span');
+      chevronEl.className = 'song-card-chevron';
+      chevronEl.textContent = '▸';
+
+      const titleEl = document.createElement('h3');
+      titleEl.className = 'song-card-title';
+      titleEl.textContent = s.title;
+
+      titleToggle.appendChild(chevronEl);
+      titleToggle.appendChild(titleEl);
+      titleToggle.addEventListener('click', function () {
+        card.classList.toggle('expanded');
+      });
+
+      const playBtn = document.createElement('button');
+      playBtn.type = 'button';
+      playBtn.className = 'ui-btn ui-btn-emerald song-card-play-btn';
+      playBtn.textContent = '▶ Play';
+      playBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        loadSongById(s.id);
+        setViewMode('play');
+      });
+
+      mainRow.appendChild(titleToggle);
+      mainRow.appendChild(playBtn);
+
+      // Collapsible Details Section: Source Badges, Metadata & Secondary Actions
+      const detailsDiv = document.createElement('div');
+      detailsDiv.className = 'song-card-details';
 
       const badgesRow = document.createElement('div');
       badgesRow.className = 'song-card-badges';
@@ -1573,30 +1677,13 @@
         badgesRow.appendChild(editBadge);
       }
 
-      const titleEl = document.createElement('h3');
-      titleEl.className = 'song-card-title';
-      titleEl.textContent = s.title;
-
       const metaEl = document.createElement('div');
       metaEl.className = 'song-card-meta';
       const bpmNum = Math.round(s.bpm || 120);
       metaEl.textContent = formatTime(s.duration) + ' • ' + s.notes.length + ' notes • ' + bpmNum + ' BPM';
 
-      topDiv.appendChild(badgesRow);
-      topDiv.appendChild(titleEl);
-      topDiv.appendChild(metaEl);
-
       const actionsRow = document.createElement('div');
       actionsRow.className = 'song-card-actions';
-
-      const playBtn = document.createElement('button');
-      playBtn.type = 'button';
-      playBtn.className = 'ui-btn ui-btn-emerald card-play-btn';
-      playBtn.textContent = '▶ Play';
-      playBtn.addEventListener('click', function () {
-        loadSongById(s.id);
-        setViewMode('play');
-      });
 
       const editBtn = document.createElement('button');
       editBtn.type = 'button';
@@ -1616,7 +1703,6 @@
         downloadSongMidi(s);
       });
 
-      actionsRow.appendChild(playBtn);
       actionsRow.appendChild(editBtn);
       actionsRow.appendChild(midiBtn);
 
@@ -1632,8 +1718,12 @@
         actionsRow.appendChild(delBtn);
       }
 
-      card.appendChild(topDiv);
-      card.appendChild(actionsRow);
+      detailsDiv.appendChild(badgesRow);
+      detailsDiv.appendChild(metaEl);
+      detailsDiv.appendChild(actionsRow);
+
+      card.appendChild(mainRow);
+      card.appendChild(detailsDiv);
       homeSongGrid.appendChild(card);
     });
   }
@@ -1643,6 +1733,7 @@
       loadSongById(songId);
     }
     state.viewMode = mode;
+    state.isCloningNote = false;
 
     if (homeView) {
       homeView.classList.toggle('hidden', mode !== 'home');
@@ -1698,6 +1789,7 @@
     state.waitStartedAtMs = null;
 
     state.selectedNoteIndex = -1;
+    state.isCloningNote = false;
     state.undoStack = [];
     state.redoStack = [];
 
@@ -1763,6 +1855,8 @@
   const editorBpmInput = document.getElementById('editorBpmInput');
   const editorGridLeftBtn = document.getElementById('editorGridLeftBtn');
   const editorGridRightBtn = document.getElementById('editorGridRightBtn');
+  const inspectorMergeBtn = document.getElementById('inspectorMergeBtn');
+  const inspectorCloneBtn = document.getElementById('inspectorCloneBtn');
   const inspectorHandBtn = document.getElementById('inspectorHandBtn');
   const inspectorSemiDownBtn = document.getElementById('inspectorSemiDownBtn');
   const inspectorSemiUpBtn = document.getElementById('inspectorSemiUpBtn');
@@ -1772,10 +1866,12 @@
 
   function setEditorTool(toolName) {
     state.editorTool = toolName;
+    state.isCloningNote = false;
     [toolSelectBtn, toolAddBtn, toolDeleteBtn].forEach(function (btn) {
       if (!btn) return;
       btn.classList.toggle('active', btn.getAttribute('data-tool') === toolName);
     });
+    syncEditorInspectorUI();
   }
 
   if (toolSelectBtn) {
@@ -1843,6 +1939,101 @@
     note.name = midiToName(nextMidi);
     audioEngine.playNote(nextMidi, 0.35, note.velocity || 0.8);
     commitSongEdit(note);
+  }
+
+  if (inspectorMergeBtn) {
+    inspectorMergeBtn.addEventListener('click', function () {
+      const idx = state.selectedNoteIndex;
+      if (idx < 0 || idx >= state.song.notes.length) return;
+      const selectedNote = state.song.notes[idx];
+
+      // Gather all notes on the exact same MIDI pitch sorted by start time
+      const samePitchNotes = state.song.notes
+        .filter(function (n) { return n.midi === selectedNote.midi; })
+        .sort(function (a, b) { return a.time - b.time; });
+
+      const pos = samePitchNotes.indexOf(selectedNote);
+      if (pos === -1) return;
+
+      let startIdx = pos;
+      let endIdx = pos;
+
+      // Expand backward across consecutive same-pitch notes with <= 0.35s gap
+      while (startIdx > 0) {
+        const prev = samePitchNotes[startIdx - 1];
+        const curr = samePitchNotes[startIdx];
+        const gap = curr.time - (prev.time + prev.duration);
+        if (gap <= 0.35) {
+          startIdx--;
+        } else {
+          break;
+        }
+      }
+
+      // Expand forward across consecutive same-pitch notes with <= 0.35s gap
+      while (endIdx < samePitchNotes.length - 1) {
+        const curr = samePitchNotes[endIdx];
+        const next = samePitchNotes[endIdx + 1];
+        const gap = next.time - (curr.time + curr.duration);
+        if (gap <= 0.35) {
+          endIdx++;
+        } else {
+          break;
+        }
+      }
+
+      // Fallback: if no cluster within 0.35s, merge with the next nearby note on this key within 1.0s
+      if (endIdx === startIdx && pos < samePitchNotes.length - 1) {
+        const next = samePitchNotes[pos + 1];
+        const gap = next.time - (selectedNote.time + selectedNote.duration);
+        if (gap <= 1.0) {
+          endIdx = pos + 1;
+        }
+      }
+
+      if (endIdx <= startIdx) return;
+
+      pushUndoSnapshot();
+
+      const firstClusterNote = samePitchNotes[startIdx];
+      let maxEndTime = firstClusterNote.time + firstClusterNote.duration;
+      let maxVel = firstClusterNote.velocity || 0.8;
+
+      const toRemove = new Set();
+      for (let i = startIdx; i <= endIdx; i++) {
+        const n = samePitchNotes[i];
+        const nEnd = n.time + n.duration;
+        if (nEnd > maxEndTime) maxEndTime = nEnd;
+        if ((n.velocity || 0.8) > maxVel) maxVel = n.velocity || 0.8;
+        if (i > startIdx) {
+          toRemove.add(n);
+        }
+      }
+
+      firstClusterNote.duration = Math.max(0.06, Math.round((maxEndTime - firstClusterNote.time) * 1000) / 1000);
+      firstClusterNote.velocity = maxVel;
+
+      state.song.notes = state.song.notes.filter(function (n) {
+        return !toRemove.has(n);
+      });
+
+      state.isCloningNote = false;
+      audioEngine.playNote(firstClusterNote.midi, Math.min(1.2, firstClusterNote.duration), firstClusterNote.velocity || 0.8);
+      commitSongEdit(firstClusterNote);
+    });
+  }
+
+  if (inspectorCloneBtn) {
+    inspectorCloneBtn.addEventListener('click', function () {
+      const idx = state.selectedNoteIndex;
+      if (idx < 0 || idx >= state.song.notes.length) {
+        state.isCloningNote = false;
+        syncEditorInspectorUI();
+        return;
+      }
+      state.isCloningNote = !state.isCloningNote;
+      syncEditorInspectorUI();
+    });
   }
 
   if (inspectorHandBtn) {
@@ -2091,7 +2282,7 @@
   document.querySelectorAll('.horizon-opt').forEach(function (btn) {
     btn.addEventListener('click', function () {
       state.horizonSec = parseFloat(btn.getAttribute('data-sec'));
-      document.getElementById('horizonLabel').textContent = state.horizonSec.toFixed(1) + 's';
+      document.getElementById('horizonLabel').textContent = Math.round(state.horizonSec) + 's';
       document.querySelectorAll('.horizon-opt').forEach(function (b) {
         b.classList.toggle('active', b === btn);
       });
@@ -2134,25 +2325,6 @@
   if (loopRampBtn) {
     loopRampBtn.addEventListener('click', function () {
       setSpeedRamp(!state.speedRamp);
-    });
-  }
-
-  // Manual Smart Hand Re-split Button inside Settings Popover
-  const resplitHandsBtn = document.getElementById('resplitHandsBtn');
-  if (resplitHandsBtn) {
-    resplitHandsBtn.addEventListener('click', function () {
-      if (state.song && Array.isArray(state.song.notes)) {
-        pushUndoSnapshot();
-        assignHandsSmart(state.song.notes);
-        const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
-        commitSongEdit(keepRef);
-        const span = resplitHandsBtn.querySelector('span') || resplitHandsBtn;
-        const origText = 'Re-split Hands (Smart AI)';
-        span.textContent = '✓ Hands Re-split (Smart AI)';
-        setTimeout(function () {
-          span.textContent = origText;
-        }, 1400);
-      }
     });
   }
 

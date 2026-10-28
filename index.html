@@ -96,12 +96,12 @@
       <div style="display:flex; flex-direction:column; gap:6px;">
         <div style="display:flex; justify-content:space-between; font-size:12px; color:#cbd5e1;">
           <span>Note Lookahead Horizon</span>
-          <strong id="horizonLabel" style="color:#34d399; font-family:monospace;">5.0s</strong>
+          <strong id="horizonLabel" style="color:#34d399; font-family:monospace;">5s</strong>
         </div>
         <div class="seg-group">
-          <button class="seg-btn horizon-opt" data-sec="3">3.0s</button>
-          <button class="seg-btn horizon-opt active" data-sec="5">5.0s (iPad)</button>
-          <button class="seg-btn horizon-opt" data-sec="7">7.0s</button>
+          <button class="seg-btn horizon-opt" data-sec="3">3s</button>
+          <button class="seg-btn horizon-opt active" data-sec="5">5s</button>
+          <button class="seg-btn horizon-opt" data-sec="7">7s</button>
         </div>
       </div>
 
@@ -127,12 +127,6 @@
           <span class="switch-thumb"></span>
         </button>
       </div>
-
-      <div class="hud-divider"></div>
-
-      <button id="resplitHandsBtn" class="ui-btn ui-btn-accent popover-action-btn" title="Re-run smart L/R voice separation using 10th hand-span constraints">
-        <span>Re-split Hands (Smart AI)</span>
-      </button>
 
       <div class="popover-btn-row">
         <button id="exportMidiBtn" class="ui-btn popover-action-btn" title="Download active song as a 2-track Standard MIDI (.mid) file">
@@ -193,6 +187,8 @@
         <div id="noteInspectorBar" class="note-inspector-bar">
           <span id="inspectorNoteLabel" class="inspector-note-label">Tap a note to inspect/edit • Drag empty runway to scroll time</span>
           <div class="inspector-actions">
+            <button id="inspectorMergeBtn" type="button" class="ui-btn ui-btn-accent" disabled title="Merge consecutive fragmented notes on this same key into one continuous note">🔗 Merge Cluster</button>
+            <button id="inspectorCloneBtn" type="button" class="ui-btn ui-btn-emerald" disabled title="Copy this note's exact start time and length to another piano key">⧉ Copy to Key</button>
             <button id="inspectorHandBtn" type="button" class="ui-btn" disabled title="Flip Note Hand (Left Blue / Right Green)">Hand: R</button>
             <button id="inspectorSemiDownBtn" type="button" class="ui-btn" disabled title="Transpose -1 Semitone">-1</button>
             <button id="inspectorSemiUpBtn" type="button" class="ui-btn" disabled title="Transpose +1 Semitone">+1</button>
@@ -362,7 +358,6 @@
       <div class="modal-card">
         <div class="modal-header">
           <div class="modal-title-group">
-            <span class="modal-badge">PHASE 3 AI</span>
             <h2 id="transcriberModalTitle" class="modal-title">Audio Song &rarr; Falling Piano Notes</h2>
           </div>
           <button id="closeTranscriberModalBtn" class="ui-btn icon-btn" title="Close" aria-label="Close Modal">&times;</button>

@@ -1308,11 +1308,12 @@ html, body {
   background: rgba(15, 23, 42, 0.82);
   border: 1px solid rgba(255, 255, 255, 0.11);
   border-radius: 14px;
-  padding: 14px 15px;
+  padding: 10px 14px;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 0;
+  align-self: start;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   transition: transform 0.14s ease, border-color 0.14s ease;
 }
@@ -1322,10 +1323,79 @@ html, body {
   border-color: rgba(56, 189, 248, 0.42);
 }
 
-.song-card-top {
+.song-card-main {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 36px;
+}
+
+.song-card-title-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 0;
+}
+
+.song-card-chevron {
+  font-size: 12px;
+  color: #38bdf8;
+  transition: transform 0.18s ease;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.song-card.expanded .song-card-chevron {
+  transform: rotate(90deg);
+}
+
+.song-card-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #f8fafc;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.song-card.expanded .song-card-title {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.song-card-play-btn,
+.song-card-actions .ui-btn {
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  box-sizing: border-box;
+}
+
+.song-card-details {
+  display: none;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.song-card.expanded .song-card-details {
+  display: flex;
 }
 
 .song-card-badges {
@@ -1368,15 +1438,6 @@ html, body {
   border: 1px solid rgba(245, 158, 11, 0.45);
 }
 
-.song-card-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  color: #f8fafc;
-  line-height: 1.3;
-  word-break: break-word;
-}
-
 .song-card-meta {
   font-size: 11.5px;
   color: #94a3b8;
@@ -1384,6 +1445,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .song-card-actions {
@@ -1391,19 +1453,6 @@ html, body {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-}
-
-.song-card-actions .ui-btn {
-  font-size: 11.5px;
-  padding: 5px 9px;
-}
-
-.song-card-actions .card-play-btn {
-  flex: 1;
-  justify-content: center;
-  font-weight: 600;
 }
 
 .song-grid-empty {
@@ -1510,4 +1559,11 @@ html, body {
 .inspector-actions .ui-btn {
   padding: 4px 8px;
   font-size: 11.5px;
+}
+
+#inspectorCloneBtn.active {
+  background: rgba(52, 211, 153, 0.35);
+  border-color: #4ade80;
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.45);
 }
