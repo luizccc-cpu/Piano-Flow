@@ -1,11 +1,15 @@
-fastapi>=0.110.0
-uvicorn[standard]>=0.28.0
-python-multipart>=0.0.9
-numpy>=1.24.0
-librosa>=0.10.1
-soundfile>=0.12.1
-pretty_midi>=0.2.10
-# Optional studio neural engines (automatically detected by server.py):
-# demucs>=4.0.1
-# basic-pitch>=0.3.2
-# piano-transcription-inference>=0.0.5
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchaudio
+fastapi
+uvicorn[standard]
+python-multipart
+gradio
+numpy<2.0.0
+scipy
+librosa
+soundfile
+resampy
+pretty_midi
+demucs
+piano_transcription_inference
