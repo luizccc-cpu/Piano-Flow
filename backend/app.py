@@ -1,16 +1,30 @@
 import os
 
-# Configure writable cache directories for Hugging Face Gradio Spaces before importing ML libraries
+# Configure writable cache directories and Gradio SSR mode for Hugging Face ZeroGPU Spaces
 os.environ["TORCH_HOME"] = "/tmp/torch"
 os.environ["HF_HOME"] = "/tmp/hf"
 os.environ["NUMBA_CACHE_DIR"] = "/tmp/numba"
+os.environ["GRADIO_SSR_MODE"] = "False"
 
 for _cache_dir in ("/tmp/torch", "/tmp/hf", "/tmp/numba"):
     os.makedirs(_cache_dir, exist_ok=True)
 
+try:
+    import spaces
+except ImportError:
+    class _SpacesFallback:
+        @staticmethod
+        def GPU(*args, **kwargs):
+            def _decorator(fn):
+                return fn
+            if len(args) == 1 and callable(args[0]) and not kwargs:
+                return args[0]
+            return _decorator
+
+    spaces = _SpacesFallback()
+
 import base64
 import shutil
-import socket
 import subprocess
 import tempfile
 import urllib.request
@@ -71,17 +85,17 @@ def ensure_bytedance_checkpoint() -> Path:
 def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Path:
     """
     Isolates the piano/harmonic stem using HT-Demucs (`htdemucs --two-stems=other`).
-    Falls back to Librosa Harmonic-Percussive Source Separation (HPSS) if Demucs is
-    unavailable or memory-constrained on free CPU tiers.
+    Uses CUDA when running inside a ZeroGPU context, with fallback to CPU or Librosa HPSS.
     """
     if HAS_DEMUCS:
         try:
             out_dir = work_dir / "demucs_out"
+            device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
             cmd = [
                 "demucs",
                 "-n", "htdemucs",
                 "--two-stems", "other",
-                "-d", "cpu",
+                "-d", device,
                 "-o", str(out_dir),
                 str(input_audio_path),
             ]
@@ -240,6 +254,53 @@ def transcribe_with_librosa_cqt_to_midi(audio_path: Path, output_midi_path: Path
     return output_midi_path.exists()
 
 
+@spaces.GPU(duration=90)
+def run_gpu_transcription_pipeline(
+    input_path_str: str,
+    work_dir_str: str = "",
+    should_isolate: bool = True,
+    sens_val: float = 55.0,
+) -> str:
+    """
+    ZeroGPU-decorated transcription pipeline.
+    Runs HT-Demucs stem isolation and ByteDance Piano Transcription on GPU (with Librosa CQT fallback),
+    returning the base64-encoded Standard MIDI (.mid) file.
+    """
+    if not input_path_str:
+        raise ValueError("Missing input audio path.")
+
+    input_path = Path(input_path_str)
+    if work_dir_str:
+        work_dir = Path(work_dir_str)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        target_audio = isolate_piano_stem(input_path, work_dir) if should_isolate else input_path
+        output_midi = work_dir / "transcribed.mid"
+
+        ok = transcribe_with_bytedance(target_audio, output_midi)
+        if not ok:
+            ok = transcribe_with_librosa_cqt_to_midi(target_audio, output_midi, float(sens_val))
+
+        if not ok or not output_midi.exists():
+            raise RuntimeError("Could not transcribe piano notes from audio file.")
+
+        return base64.b64encode(output_midi.read_bytes()).decode("ascii")
+
+    os.makedirs("/tmp", exist_ok=True)
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="keyflow_zerogpu_") as tmp_dir:
+        work_dir = Path(tmp_dir)
+        target_audio = isolate_piano_stem(input_path, work_dir) if should_isolate else input_path
+        output_midi = work_dir / "transcribed.mid"
+
+        ok = transcribe_with_bytedance(target_audio, output_midi)
+        if not ok:
+            ok = transcribe_with_librosa_cqt_to_midi(target_audio, output_midi, float(sens_val))
+
+        if not ok or not output_midi.exists():
+            raise RuntimeError("Could not transcribe piano notes from audio file.")
+
+        return base64.b64encode(output_midi.read_bytes()).decode("ascii")
+
+
 async def health_check_handler() -> Dict[str, Any]:
     return {
         "status": "ok",
@@ -273,18 +334,16 @@ async def transcribe_endpoint_handler(
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
         input_path.write_bytes(raw_bytes)
 
-        target_audio = isolate_piano_stem(input_path, work_dir) if should_isolate else input_path
-        output_midi = work_dir / "transcribed.mid"
+        try:
+            b64_str = run_gpu_transcription_pipeline(
+                str(input_path),
+                str(work_dir),
+                should_isolate,
+                sens_val,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
-        ok = transcribe_with_bytedance(target_audio, output_midi)
-        if not ok:
-            ok = transcribe_with_librosa_cqt_to_midi(target_audio, output_midi, sens_val)
-
-        if not ok or not output_midi.exists():
-            raise HTTPException(status_code=422, detail="Could not transcribe piano notes from audio file.")
-
-        midi_bytes = output_midi.read_bytes()
-        b64_str = base64.b64encode(midi_bytes).decode("ascii")
         return {
             "midi_base64": b64_str,
             "title": clean_title,
@@ -321,12 +380,12 @@ if hasattr(gr, "routes") and hasattr(gr.routes, "App") and hasattr(gr.routes.App
     gr.routes.App.create_app = _patched_create_app
 
 
-# 1. Create the Gradio Blocks UI first
+# 1. Create the Gradio Blocks UI and wire the @spaces.GPU function so ZeroGPU detects it during startup
 with gr.Blocks(title="KeyFlow AI Audio-to-MIDI Server") as demo:
     gr.Markdown(
         """
-        # 🎹 KeyFlow AI Audio-to-MIDI Server (Online)
-        This Hugging Face Gradio Space powers **Phase 3 AI Audio-to-MIDI Transcription** for the **KeyFlow Virtual Piano** iPad web app.
+        # 🎹 KeyFlow AI Audio-to-MIDI Server (ZeroGPU Online)
+        This Hugging Face Gradio Space powers **Phase 3 AI Audio-to-MIDI Transcription** (`HT-Demucs` + `ByteDance Piano AI`) on **ZeroGPU** for the **KeyFlow Virtual Piano** iPad web app.
 
         ### Active API Endpoints
         - **`GET /health`** — Returns server health & active engines (`HT-Demucs`, `ByteDance Piano AI`).
@@ -335,22 +394,29 @@ with gr.Blocks(title="KeyFlow AI Audio-to-MIDI Server") as demo:
         **How to connect from KeyFlow:** Copy this Space's public `.hf.space` URL (e.g. `https://<username>-<space-name>.hf.space`) into the **AI Server URL** field inside KeyFlow's **AI Audio** modal and tap **Check**.
         """
     )
+    with gr.Row():
+        audio_in = gr.Audio(type="filepath", label="Audio File (.mp3, .wav, .m4a)")
+        work_dir_in = gr.Textbox(value="", visible=False)
+        isolate_in = gr.Checkbox(value=True, label="Isolate Piano Stem (HT-Demucs)")
+        sens_in = gr.Slider(minimum=15, maximum=85, value=55, step=1, label="Sensitivity (%)")
+    transcribe_btn = gr.Button("Transcribe Audio to MIDI (Base64)")
+    midi_b64_out = gr.Textbox(label="Base64 Standard MIDI Output")
 
-# 2. Reference Gradio's built-in FastAPI instance (or initialize it if already present) and attach routes
+    transcribe_btn.click(
+        fn=run_gpu_transcription_pipeline,
+        inputs=[audio_in, work_dir_in, isolate_in, sens_in],
+        outputs=midi_b64_out,
+        api_name="transcribe",
+    )
+
+# 2. Reference Gradio's built-in FastAPI instance (if already initialized) and attach routes
 app = getattr(demo, "app", None)
 if app is not None:
     register_keyflow_routes(app)
 
 
-def _is_port_in_use(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.3)
-        return s.connect_ex(("127.0.0.1", port)) == 0
-
-
 if __name__ == "__main__":
-    target_port = int(os.environ.get("PORT", 7860))
-    if not _is_port_in_use(target_port):
-        demo.launch(server_name="0.0.0.0", server_port=target_port)
-        if getattr(demo, "app", None) is not None:
-            app = register_keyflow_routes(demo.app)
+    try:
+        demo.launch(ssr_mode=False)
+    except TypeError:
+        demo.launch()
