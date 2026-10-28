@@ -9,8 +9,8 @@ for _cache_dir in ("/tmp/torch", "/tmp/hf", "/tmp/numba"):
     os.makedirs(_cache_dir, exist_ok=True)
 
 import base64
-import io
 import shutil
+import socket
 import subprocess
 import tempfile
 import urllib.request
@@ -55,28 +55,6 @@ BYTEDANCE_CHECKPOINT_URL = (
     "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1"
 )
 BYTEDANCE_CHECKPOINT_PATH = Path("/tmp/piano_model.pth")
-
-
-app = FastAPI(
-    title="KeyFlow AI Audio-to-MIDI Transcription Server (Hugging Face Gradio Space)",
-    version="3.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_credentials=False,
-)
-
-
-@app.get("/health")
-async def health_check() -> Dict[str, Any]:
-    return {
-        "status": "ok",
-        "engines": ["HT-Demucs", "ByteDance Piano AI"],
-    }
 
 
 def ensure_bytedance_checkpoint() -> Path:
@@ -262,8 +240,14 @@ def transcribe_with_librosa_cqt_to_midi(audio_path: Path, output_midi_path: Path
     return output_midi_path.exists()
 
 
-@app.post("/api/transcribe")
-async def transcribe_endpoint(
+async def health_check_handler() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "engines": ["HT-Demucs", "ByteDance Piano AI"],
+    }
+
+
+async def transcribe_endpoint_handler(
     file: UploadFile = File(...),
     isolate_piano: str = Form("true"),
     sensitivity: str = Form("55"),
@@ -307,7 +291,37 @@ async def transcribe_endpoint(
         }
 
 
-# Gradio Blocks Status UI mounted at "/" for Hugging Face Spaces
+def register_keyflow_routes(fastapi_app: FastAPI) -> FastAPI:
+    """Idempotently attaches CORS and KeyFlow's /health & /api/transcribe endpoints to Gradio's FastAPI app."""
+    if fastapi_app is None or getattr(fastapi_app, "_keyflow_routes_registered", False):
+        return fastapi_app
+
+    fastapi_app._keyflow_routes_registered = True
+    fastapi_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=False,
+    )
+    fastapi_app.get("/health")(health_check_handler)
+    fastapi_app.post("/api/transcribe")(transcribe_endpoint_handler)
+    return fastapi_app
+
+
+# Hook Gradio's App.create_app so routes are guaranteed to be attached even when demo.app is initialized lazily
+if hasattr(gr, "routes") and hasattr(gr.routes, "App") and hasattr(gr.routes.App, "create_app"):
+    _orig_create_app = gr.routes.App.create_app
+
+    def _patched_create_app(*args, **kwargs):
+        created_app = _orig_create_app(*args, **kwargs)
+        register_keyflow_routes(created_app)
+        return created_app
+
+    gr.routes.App.create_app = _patched_create_app
+
+
+# 1. Create the Gradio Blocks UI first
 with gr.Blocks(title="KeyFlow AI Audio-to-MIDI Server") as demo:
     gr.Markdown(
         """
@@ -322,9 +336,21 @@ with gr.Blocks(title="KeyFlow AI Audio-to-MIDI Server") as demo:
         """
     )
 
-app = gr.mount_gradio_app(app, demo, path="/")
+# 2. Reference Gradio's built-in FastAPI instance (or initialize it if already present) and attach routes
+app = getattr(demo, "app", None)
+if app is not None:
+    register_keyflow_routes(app)
+
+
+def _is_port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        return s.connect_ex(("127.0.0.1", port)) == 0
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 7860)))
+    target_port = int(os.environ.get("PORT", 7860))
+    if not _is_port_in_use(target_port):
+        demo.launch(server_name="0.0.0.0", server_port=target_port)
+        if getattr(demo, "app", None) is not None:
+            app = register_keyflow_routes(demo.app)
