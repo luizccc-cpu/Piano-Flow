@@ -44,7 +44,11 @@
         notes: songObj.notes || [],
         duration: songObj.duration || 10,
         beats: songObj.beats || [],
-        isCustom: true,
+        bpm: songObj.bpm || 120,
+        gridOffset: typeof songObj.gridOffset === 'number' ? songObj.gridOffset : 0.8,
+        beatsPerBar: songObj.beatsPerBar || 4,
+        isCustom: songObj.isCustom !== undefined ? !!songObj.isCustom : true,
+        isModifiedBuiltin: !!songObj.isModifiedBuiltin,
         source: songObj.source || 'custom',
         createdAt: songObj.createdAt || Date.now()
       };

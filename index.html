@@ -13,33 +13,50 @@
 </head>
 <body>
   <div id="appShell">
-    <!-- ==================== TOP BAR ==================== -->
+    <!-- Hidden File Input for .MID / .MIDI Uploads (Triggered from Home View) -->
+    <input id="midiInput" type="file" accept=".mid,.midi" style="display:none;" />
+
+    <!-- ==================== PHASE 4A: HOME SCREEN SONG LIBRARY ==================== -->
+    <section id="homeView" class="home-view">
+      <div class="home-header">
+        <div class="home-brand">
+          <div class="home-logo-icon">🎹</div>
+          <div>
+            <h1 class="home-title">KeyFlow</h1>
+            <p class="home-subtitle">Interactive Falling-Note Piano Studio</p>
+          </div>
+        </div>
+
+        <div class="home-controls-bar">
+          <input id="homeSearchInput" type="search" class="home-search-input" placeholder="Search songs..." aria-label="Search songs" />
+
+          <div class="home-filter-group" role="tablist" aria-label="Filter songs by source">
+            <button type="button" class="home-filter-btn active" data-filter="all">All Songs</button>
+            <button type="button" class="home-filter-btn" data-filter="ai">AI Audio</button>
+            <button type="button" class="home-filter-btn" data-filter="midi">MIDI Uploads</button>
+            <button type="button" class="home-filter-btn" data-filter="builtin">Built-In Classics</button>
+          </div>
+
+          <div class="home-actions-group">
+            <label for="midiInput" id="homeOpenMidiBtn" class="ui-btn ui-btn-accent" title="Upload a Standard .MID or .MIDI file">
+              <span>+ Open .MID File</span>
+            </label>
+            <button id="homeOpenAiModalBtn" type="button" class="ui-btn ui-btn-emerald" title="Convert an MP3, WAV, M4A, or OGG song into piano notes">
+              <span>+ AI Audio Song</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div id="homeSongGrid" class="home-song-grid"></div>
+    </section>
+
+    <!-- ==================== TOP BAR (PLAY & EDIT MODES) ==================== -->
     <header class="top-bar">
       <div class="top-left">
+        <button id="backToHomeBtn" type="button" class="ui-btn" title="Return to Song Library">← Home</button>
         <span class="song-title-display" id="songTitleHeader">Let It Be - The Beatles</span>
-
-        <select id="songSelect" class="ui-select" aria-label="Select Song">
-          <option value="let_it_be">Let It Be - The Beatles</option>
-          <option value="imagine">Imagine - John Lennon</option>
-          <option value="clair_de_lune">Clair de Lune - Debussy</option>
-          <option value="gymnopedie">Gymnopédie No. 1 - Satie</option>
-          <option value="pyramid_song">Pyramid Song - Radiohead</option>
-        </select>
-
-        <label for="midiInput" class="ui-btn ui-btn-accent" title="Load any .mid or .midi song file">
-          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
-          </svg>
-          <span>Open .MID</span>
-        </label>
-        <input id="midiInput" type="file" accept=".mid,.midi" style="display:none;" />
-
-        <button id="openTranscriberModalBtn" class="ui-btn ui-btn-emerald" title="Convert any MP3/WAV/M4A song into falling piano notes">
-          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"/>
-          </svg>
-          <span>AI Audio</span>
-        </button>
+        <button id="toggleEditModeBtn" type="button" class="ui-btn ui-btn-accent" title="Open Visual Note Editor">✎ Edit Notes</button>
       </div>
 
       <!-- Center Wait Mode Prompt -->
@@ -134,6 +151,58 @@
 
     <!-- ==================== MAIN STAGE (5s RUNWAY + PIANO) ==================== -->
     <main class="stage-container" id="stageContainer">
+      <!-- ==================== PHASE 4A: INTERACTIVE VISUAL NOTE EDITOR TOOLBAR ==================== -->
+      <div id="editorToolbar" class="editor-toolbar" style="display:none;">
+        <div class="editor-toolbar-row">
+          <!-- Tool Mode Buttons -->
+          <div class="editor-group">
+            <button id="toolSelectBtn" type="button" class="ui-btn editor-tool-btn active" data-tool="select" title="Select, Move (Pitch/Time), or Drag Top Edge to Resize Length">
+              <span>↖ Select / Resize</span>
+            </button>
+            <button id="toolAddBtn" type="button" class="ui-btn editor-tool-btn" data-tool="add" title="Tap & drag upward on any key lane to draw a new note">
+              <span>＋ Add Note</span>
+            </button>
+            <button id="toolDeleteBtn" type="button" class="ui-btn editor-tool-btn" data-tool="delete" title="Tap any note to delete it immediately">
+              <span>✕ Erase</span>
+            </button>
+          </div>
+
+          <!-- Snap to Grid & Undo/Redo -->
+          <div class="editor-group">
+            <select id="editorSnapSelect" class="ui-select" title="Time Grid Snap">
+              <option value="0">Snap: Free</option>
+              <option value="0.25" selected>Snap: 1/4 Beat</option>
+              <option value="0.125">Snap: 1/8 Beat</option>
+              <option value="0.0625">Snap: 1/16 Beat</option>
+            </select>
+
+            <button id="editorUndoBtn" type="button" class="ui-btn" title="Undo (Ctrl+Z / Cmd+Z)" disabled>↶ Undo</button>
+            <button id="editorRedoBtn" type="button" class="ui-btn" title="Redo (Ctrl+Y / Cmd+Shift+Z)" disabled>↷ Redo</button>
+          </div>
+
+          <!-- BPM & Measure Grid Alignment -->
+          <div class="editor-group">
+            <span class="editor-mini-label">BPM</span>
+            <input id="editorBpmInput" type="number" min="40" max="240" step="1" value="120" class="editor-num-input" title="Song Tempo (BPM)" />
+            <button id="editorGridLeftBtn" type="button" class="ui-btn" title="Shift Bar 1 Grid Earlier (-0.05s)">Bar ◀</button>
+            <button id="editorGridRightBtn" type="button" class="ui-btn" title="Shift Bar 1 Grid Later (+0.05s)">Bar ▶</button>
+          </div>
+        </div>
+
+        <!-- Selected Note Inspector Bar -->
+        <div id="noteInspectorBar" class="note-inspector-bar">
+          <span id="inspectorNoteLabel" class="inspector-note-label">Tap a note to inspect/edit • Drag empty runway to scroll time</span>
+          <div class="inspector-actions">
+            <button id="inspectorHandBtn" type="button" class="ui-btn" disabled title="Flip Note Hand (Left Blue / Right Green)">Hand: R</button>
+            <button id="inspectorSemiDownBtn" type="button" class="ui-btn" disabled title="Transpose -1 Semitone">-1</button>
+            <button id="inspectorSemiUpBtn" type="button" class="ui-btn" disabled title="Transpose +1 Semitone">+1</button>
+            <button id="inspectorOctDownBtn" type="button" class="ui-btn" disabled title="Transpose -1 Octave">-Oct</button>
+            <button id="inspectorOctUpBtn" type="button" class="ui-btn" disabled title="Transpose +1 Octave">+Oct</button>
+            <button id="inspectorDeleteNoteBtn" type="button" class="ui-btn ui-btn-danger" disabled title="Delete Selected Note (Del / Backspace)">🗑 Delete</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Floating Left Practice & Sound HUD (Matches Approved iPad UI) -->
       <aside id="hudPanel" class="hud-panel">
         <div class="hud-header-bar" id="hudHeaderBar">

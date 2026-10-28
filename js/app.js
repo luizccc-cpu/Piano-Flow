@@ -5,16 +5,57 @@
   const midiToName = global.midiToName;
   const isBlackMidi = global.isBlackMidi;
   const formatTime = global.formatTime;
+  const generateBeatGrid = global.generateBeatGrid;
   const parseStandardMidiFile = global.parseStandardMidiFile;
   const calculateAutoRange = global.calculateAutoRange;
   const assignHandsSmart = global.assignHandsSmart;
   const audioEngine = global.audioEngine;
   const audioTranscriber = global.audioTranscriber;
 
+  // Enrich built-in songs with metadata and save pristine factory copies for Reset
+  const BUILTIN_IDS = ['let_it_be', 'imagine', 'clair_de_lune', 'gymnopedie', 'pyramid_song'];
+  const FACTORY_BUILTIN_SONGS = {};
+  BUILTIN_IDS.forEach(function (id) {
+    const s = SONGS[id];
+    if (!s) return;
+    s.id = id;
+    s.source = 'builtin';
+    s.isCustom = false;
+    s.isModifiedBuiltin = false;
+    if (!s.bpm) {
+      if (Array.isArray(s.beats) && s.beats.length >= 2) {
+        const dt = s.beats[1].time - s.beats[0].time;
+        s.bpm = dt > 0.05 ? Math.round(60 / dt) : 120;
+      } else {
+        s.bpm = 120;
+      }
+    }
+    if (typeof s.gridOffset !== 'number') {
+      s.gridOffset = (Array.isArray(s.beats) && s.beats.length > 0) ? s.beats[0].time : 0.8;
+    }
+    if (!s.beatsPerBar) {
+      let bpb = 4;
+      if (Array.isArray(s.beats)) {
+        for (let i = 1; i < s.beats.length; i++) {
+          if (s.beats[i].isMeasure) {
+            bpb = i;
+            break;
+          }
+        }
+      }
+      s.beatsPerBar = bpb;
+    }
+    FACTORY_BUILTIN_SONGS[id] = JSON.parse(JSON.stringify(s));
+  });
+
   /********************************************************************
    * APPLICATION STATE
    ********************************************************************/
   const state = {
+    viewMode: 'home', // 'home' | 'play' | 'edit'
+    homeFilter: 'all', // 'all' | 'ai' | 'midi' | 'builtin'
+    homeSearch: '',
+
     activeSongId: 'let_it_be',
     song: SONGS.let_it_be,
     isPlaying: false,
@@ -44,6 +85,13 @@
     speedRamp: false,
     loopPassCount: 1,
     targetRampSpeed: 1.25,
+
+    // Phase 4A: Interactive Visual Note Editor State
+    editorTool: 'select', // 'select' | 'add' | 'delete'
+    editorSnapBeats: 0.25, // 0 | 0.25 | 0.125 | 0.0625
+    selectedNoteIndex: -1,
+    undoStack: [],
+    redoStack: [],
 
     minMidi: 48,
     maxMidi: 84,
@@ -297,6 +345,35 @@
       ctx.restore();
     }
 
+    // 3A-Edit: Subtle Sub-Beat Snap Gridlines when in Edit Mode
+    if (state.viewMode === 'edit' && state.editorSnapBeats > 0 && state.editorSnapBeats < 1) {
+      const bpmVal = Math.max(30, Math.min(260, state.song.bpm || 120));
+      const beatSec = 60 / bpmVal;
+      const stepSec = beatSec * state.editorSnapBeats;
+      const gridOff = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
+      if (stepSec >= 0.04) {
+        const firstIdx = Math.ceil((curT - gridOff) / stepSec);
+        const endT = curT + horizon + 0.05;
+        ctx.save();
+        ctx.beginPath();
+        ctx.setLineDash([2, 6]);
+        for (let k = firstIdx; k < firstIdx + 160; k++) {
+          const tSnap = gridOff + k * stepSec;
+          if (tSnap > endT) break;
+          if (tSnap < curT) continue;
+          const ySnap = strikeY - (tSnap - curT) * pxPerSec;
+          if (ySnap < 8 || ySnap > strikeY - 2) continue;
+          ctx.moveTo(0, ySnap);
+          ctx.lineTo(width - 44, ySnap);
+        }
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.065)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+    }
+
     // 3B. Horizontal 5-Second Horizon Markers (1s..5s on the right edge)
     ctx.save();
     ctx.font = '600 11px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -394,12 +471,34 @@
       ctx.fillStyle = barGrad;
       ctx.fill();
 
+      const isSelectedInEdit = (state.viewMode === 'edit' && i === state.selectedNoteIndex);
       ctx.shadowBlur = 0;
-      ctx.lineWidth = isWaiting ? 2.2 : 1.2;
-      ctx.strokeStyle = isWaiting
+      ctx.lineWidth = isSelectedInEdit ? 2.5 : (isWaiting ? 2.2 : 1.2);
+      ctx.strokeStyle = isSelectedInEdit
         ? '#ffffff'
-        : (n.hand === 'L' ? 'rgba(186, 230, 253, 0.85)' : 'rgba(187, 247, 208, 0.85)');
+        : (isWaiting
+          ? '#ffffff'
+          : (n.hand === 'L' ? 'rgba(186, 230, 253, 0.85)' : 'rgba(187, 247, 208, 0.85)'));
       ctx.stroke();
+
+      // Top Resize Handle Bar when in Edit Mode (bright on selected note, subtle on others)
+      if (state.viewMode === 'edit' && w >= 12 && barH >= 14) {
+        const handleH = isSelectedInEdit ? 8 : 5;
+        const handleW = Math.max(6, w - 4);
+        const handleX = x + 2;
+        const handleY = topY + 1;
+        drawRoundedRect(ctx, handleX, handleY, handleW, handleH, 3);
+        ctx.fillStyle = isSelectedInEdit ? '#ffffff' : 'rgba(255, 255, 255, 0.35)';
+        ctx.fill();
+        if (isSelectedInEdit && handleW >= 12) {
+          ctx.beginPath();
+          ctx.moveTo(handleX + 4, handleY + handleH / 2);
+          ctx.lineTo(handleX + handleW - 4, handleY + handleH / 2);
+          ctx.strokeStyle = '#0f172a';
+          ctx.lineWidth = 1.3;
+          ctx.stroke();
+        }
+      }
 
       // Explicit Note Name Badge inside every falling bar (e.g., F3, C4, A4, C5)
       const badgeH = Math.min(20, Math.max(14, w * 0.52));
@@ -784,30 +883,413 @@
     return null;
   }
 
+  /********************************************************************
+   * PHASE 4A: VISUAL NOTE EDITOR HELPERS, UNDO/REDO & CANVAS GESTURES
+   ********************************************************************/
+  function xToNearestMidi(x) {
+    for (let i = 0; i < state.blackKeys.length; i++) {
+      const bk = state.blackKeys[i];
+      if (x >= bk.x && x <= bk.x + bk.w) return bk.midi;
+    }
+    for (let i = 0; i < state.whiteKeys.length; i++) {
+      const wk = state.whiteKeys[i];
+      if (x >= wk.x && x <= wk.x + wk.w) return wk.midi;
+    }
+    let bestMidi = state.minMidi;
+    let bestDist = Infinity;
+    for (let i = 0; i < state.whiteKeys.length; i++) {
+      const wk = state.whiteKeys[i];
+      const cx = wk.x + wk.w * 0.5;
+      const d = Math.abs(x - cx);
+      if (d < bestDist) {
+        bestDist = d;
+        bestMidi = wk.midi;
+      }
+    }
+    return bestMidi;
+  }
+
+  function snapTimeToGrid(sec) {
+    const clamped = Math.max(0, sec);
+    if (!state.editorSnapBeats || state.editorSnapBeats <= 0) {
+      return Math.round(clamped * 1000) / 1000;
+    }
+    const bpmVal = Math.max(30, Math.min(260, state.song.bpm || 120));
+    const beatSec = 60 / bpmVal;
+    const stepSec = beatSec * state.editorSnapBeats;
+    const offset = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
+    const snapped = offset + Math.round((clamped - offset) / stepSec) * stepSec;
+    return Math.max(0, Math.round(snapped * 1000) / 1000);
+  }
+
+  function hitTestRunwayNote(x, y) {
+    if (y >= strikeY || y < 0) return null;
+    const horizon = state.horizonSec;
+    const pxPerSec = strikeY / horizon;
+    const curT = state.currentTime;
+    const notes = state.song.notes;
+
+    for (let i = notes.length - 1; i >= 0; i--) {
+      const n = notes[i];
+      const nStart = n.time;
+      const nEnd = n.time + n.duration;
+      if (nEnd < curT - 0.04 || nStart > curT + horizon + 0.1) continue;
+
+      const kGeom = state.keyMap[n.midi];
+      if (!kGeom) continue;
+
+      const rawBotY = strikeY - (nStart - curT) * pxPerSec;
+      const rawTopY = strikeY - (nEnd - curT) * pxPerSec;
+      const botY = Math.min(strikeY, rawBotY);
+      const topY = Math.max(-16, rawTopY);
+      if (botY - topY <= 2) continue;
+
+      if (x >= kGeom.laneX - 4 && x <= kGeom.laneX + kGeom.laneW + 4 && y >= topY - 8 && y <= botY + 4) {
+        if (Math.abs(y - topY) <= 12) {
+          return { index: i, zone: 'resize-top' };
+        }
+        return { index: i, zone: 'body' };
+      }
+    }
+    return null;
+  }
+
+  function cloneSongSnapshot(song) {
+    return {
+      notes: (song.notes || []).map(function (n) {
+        return {
+          midi: n.midi,
+          name: n.name || midiToName(n.midi),
+          time: n.time,
+          duration: n.duration,
+          hand: n.hand || (n.midi < 60 ? 'L' : 'R'),
+          velocity: n.velocity || 0.78
+        };
+      }),
+      bpm: song.bpm || 120,
+      gridOffset: typeof song.gridOffset === 'number' ? song.gridOffset : 0.8,
+      beatsPerBar: song.beatsPerBar || 4,
+      duration: song.duration || 15
+    };
+  }
+
+  function syncUndoRedoUI() {
+    const uBtn = document.getElementById('editorUndoBtn');
+    const rBtn = document.getElementById('editorRedoBtn');
+    if (uBtn) uBtn.disabled = state.undoStack.length === 0;
+    if (rBtn) rBtn.disabled = state.redoStack.length === 0;
+  }
+
+  function syncEditorInspectorUI() {
+    const labelEl = document.getElementById('inspectorNoteLabel');
+    const handBtn = document.getElementById('inspectorHandBtn');
+    const semiDownBtn = document.getElementById('inspectorSemiDownBtn');
+    const semiUpBtn = document.getElementById('inspectorSemiUpBtn');
+    const octDownBtn = document.getElementById('inspectorOctDownBtn');
+    const octUpBtn = document.getElementById('inspectorOctUpBtn');
+    const delBtn = document.getElementById('inspectorDeleteNoteBtn');
+    const bpmInput = document.getElementById('editorBpmInput');
+
+    if (bpmInput && document.activeElement !== bpmInput) {
+      bpmInput.value = Math.round(state.song.bpm || 120);
+    }
+
+    const idx = state.selectedNoteIndex;
+    const note = (idx >= 0 && idx < state.song.notes.length) ? state.song.notes[idx] : null;
+
+    if (!note) {
+      if (labelEl) {
+        labelEl.textContent = 'Tap a note to inspect/edit • Drag empty runway to scroll time';
+      }
+      if (handBtn) {
+        handBtn.disabled = true;
+        handBtn.textContent = 'Hand: R';
+      }
+      if (semiDownBtn) semiDownBtn.disabled = true;
+      if (semiUpBtn) semiUpBtn.disabled = true;
+      if (octDownBtn) octDownBtn.disabled = true;
+      if (octUpBtn) octUpBtn.disabled = true;
+      if (delBtn) delBtn.disabled = true;
+      return;
+    }
+
+    if (labelEl) {
+      labelEl.textContent = note.name + ' (MIDI ' + note.midi + ') • Start: ' + note.time.toFixed(2) + 's • Len: ' + note.duration.toFixed(2) + 's';
+    }
+    if (handBtn) {
+      handBtn.disabled = false;
+      handBtn.textContent = 'Hand: ' + (note.hand === 'L' ? 'L (Blue)' : 'R (Green)');
+    }
+    if (semiDownBtn) semiDownBtn.disabled = false;
+    if (semiUpBtn) semiUpBtn.disabled = false;
+    if (octDownBtn) octDownBtn.disabled = false;
+    if (octUpBtn) octUpBtn.disabled = false;
+    if (delBtn) delBtn.disabled = false;
+  }
+
+  function pushUndoSnapshot() {
+    state.undoStack.push(cloneSongSnapshot(state.song));
+    if (state.undoStack.length > 30) {
+      state.undoStack.shift();
+    }
+    state.redoStack = [];
+    syncUndoRedoUI();
+  }
+
+  function persistActiveSong() {
+    if (!state.song) return;
+    if (!state.song.id) state.song.id = state.activeSongId || ('custom_' + Date.now());
+    if (!state.song.isCustom) {
+      state.song.isModifiedBuiltin = true;
+    }
+    if (audioTranscriber && audioTranscriber.customSongStore) {
+      audioTranscriber.customSongStore.saveSong(state.song);
+    }
+  }
+
+  function commitSongEdit(keepNoteRef) {
+    if (!state.song || !Array.isArray(state.song.notes)) return;
+    state.song.notes.sort(function (a, b) {
+      return (a.time - b.time) || (a.midi - b.midi);
+    });
+    if (keepNoteRef) {
+      state.selectedNoteIndex = state.song.notes.indexOf(keepNoteRef);
+    } else if (state.selectedNoteIndex >= state.song.notes.length) {
+      state.selectedNoteIndex = -1;
+    }
+
+    let maxEnd = 0;
+    for (let i = 0; i < state.song.notes.length; i++) {
+      const end = state.song.notes[i].time + state.song.notes[i].duration;
+      if (end > maxEnd) maxEnd = end;
+    }
+    state.song.duration = Math.max(10, Math.round((maxEnd + 2.0) * 100) / 100);
+    const bpmVal = Math.max(30, Math.min(260, state.song.bpm || 120));
+    const offsetVal = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
+    const bpbVal = state.song.beatsPerBar || 4;
+    state.song.beats = generateBeatGrid(state.song.duration, 60 / bpmVal, bpbVal, offsetVal);
+
+    persistActiveSong();
+    resetNoteTriggersBefore(state.currentTime);
+    calculateAutoRange(state);
+    rebuildKeyboardGeometry();
+    syncTimelineUI();
+    syncLoopUI();
+    syncEditorInspectorUI();
+    syncUndoRedoUI();
+  }
+
+  function applySongSnapshot(snap) {
+    if (!snap || !state.song) return;
+    state.song.notes = snap.notes.map(function (n) {
+      return {
+        midi: n.midi,
+        name: n.name || midiToName(n.midi),
+        time: n.time,
+        duration: n.duration,
+        hand: n.hand,
+        velocity: n.velocity
+      };
+    });
+    state.song.bpm = snap.bpm || 120;
+    state.song.gridOffset = typeof snap.gridOffset === 'number' ? snap.gridOffset : 0.8;
+    state.song.beatsPerBar = snap.beatsPerBar || 4;
+    state.song.duration = snap.duration || 15;
+    state.selectedNoteIndex = -1;
+    commitSongEdit(null);
+  }
+
+  function undoEdit() {
+    if (state.undoStack.length === 0) return;
+    state.redoStack.push(cloneSongSnapshot(state.song));
+    const prev = state.undoStack.pop();
+    applySongSnapshot(prev);
+  }
+
+  function redoEdit() {
+    if (state.redoStack.length === 0) return;
+    state.undoStack.push(cloneSongSnapshot(state.song));
+    const next = state.redoStack.pop();
+    applySongSnapshot(next);
+  }
+
   const pointerMidis = {};
+  let editDrag = null;
+  let lastEmptyRunwayTap = { timeMs: 0, x: 0, y: 0 };
+
   canvas.addEventListener('pointerdown', function (e) {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const hit = hitTestPiano(x, y);
-    if (hit !== null) {
+    const hitKey = hitTestPiano(x, y);
+    if (hitKey !== null) {
       try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
-      pointerMidis[e.pointerId] = hit;
-      userNoteOn(hit, 0.85);
-    } else if (y < strikeY) {
+      pointerMidis[e.pointerId] = hitKey;
+      userNoteOn(hitKey, 0.85);
+      return;
+    }
+
+    if (y >= strikeY) return;
+
+    // Play Mode: clicking the runway toggles Play/Pause
+    if (state.viewMode !== 'edit') {
       setPlaying(!state.isPlaying);
+      return;
+    }
+
+    // Edit Mode Runway Interaction
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+    const pxPerSec = strikeY / state.horizonSec;
+    const hitNote = hitTestRunwayNote(x, y);
+
+    if (state.editorTool === 'delete') {
+      if (hitNote) {
+        pushUndoSnapshot();
+        state.song.notes.splice(hitNote.index, 1);
+        state.selectedNoteIndex = -1;
+        commitSongEdit(null);
+      }
+      return;
+    }
+
+    function createNoteAtPoint(ptX, ptY) {
+      const midi = xToNearestMidi(ptX);
+      const rawT = state.currentTime + (strikeY - ptY) / pxPerSec;
+      const snappedT = snapTimeToGrid(rawT);
+      pushUndoSnapshot();
+      const newNote = {
+        midi: midi,
+        name: midiToName(midi),
+        time: snappedT,
+        duration: 0.35,
+        hand: midi < 60 ? 'L' : 'R',
+        velocity: 0.82
+      };
+      state.song.notes.push(newNote);
+      state.selectedNoteIndex = state.song.notes.length - 1;
+      audioEngine.playNote(midi, 0.35, 0.82);
+      syncEditorInspectorUI();
+      editDrag = {
+        pointerId: e.pointerId,
+        mode: 'resize',
+        noteRef: newNote,
+        origTime: newNote.time,
+        origDur: newNote.duration,
+        origMidi: newNote.midi,
+        startX: ptX,
+        startY: ptY,
+        undoPushed: true,
+        modified: true
+      };
+    }
+
+    if (state.editorTool === 'add') {
+      createNoteAtPoint(x, y);
+      return;
+    }
+
+    // Select Tool Mode
+    if (hitNote) {
+      state.selectedNoteIndex = hitNote.index;
+      const note = state.song.notes[hitNote.index];
+      audioEngine.playNote(note.midi, 0.35, note.velocity || 0.8);
+      syncEditorInspectorUI();
+      editDrag = {
+        pointerId: e.pointerId,
+        mode: hitNote.zone === 'resize-top' ? 'resize' : 'move',
+        noteRef: note,
+        origTime: note.time,
+        origDur: note.duration,
+        origMidi: note.midi,
+        startX: x,
+        startY: y,
+        undoPushed: false,
+        modified: false
+      };
+    } else {
+      const nowMs = performance.now();
+      const dtTap = nowMs - lastEmptyRunwayTap.timeMs;
+      const distTap = Math.hypot(x - lastEmptyRunwayTap.x, y - lastEmptyRunwayTap.y);
+      if (dtTap < 320 && distTap < 20) {
+        lastEmptyRunwayTap.timeMs = 0;
+        createNoteAtPoint(x, y);
+        return;
+      }
+      lastEmptyRunwayTap = { timeMs: nowMs, x: x, y: y };
+      state.selectedNoteIndex = -1;
+      syncEditorInspectorUI();
+      editDrag = {
+        pointerId: e.pointerId,
+        mode: 'scroll',
+        startY: y,
+        origCurrentTime: state.currentTime
+      };
     }
   });
 
   canvas.addEventListener('pointermove', function (e) {
-    if (pointerMidis[e.pointerId] === undefined) return;
     const rect = canvas.getBoundingClientRect();
-    const hit = hitTestPiano(e.clientX - rect.left, e.clientY - rect.top);
-    const prev = pointerMidis[e.pointerId];
-    if (hit !== null && hit !== prev) {
-      userNoteOff(prev);
-      pointerMidis[e.pointerId] = hit;
-      userNoteOn(hit, 0.76);
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (pointerMidis[e.pointerId] !== undefined) {
+      const hit = hitTestPiano(x, y);
+      const prev = pointerMidis[e.pointerId];
+      if (hit !== null && hit !== prev) {
+        userNoteOff(prev);
+        pointerMidis[e.pointerId] = hit;
+        userNoteOn(hit, 0.76);
+      }
+      return;
+    }
+
+    if (editDrag && editDrag.pointerId === e.pointerId) {
+      const pxPerSec = strikeY / state.horizonSec;
+
+      if (editDrag.mode === 'scroll') {
+        const dy = y - editDrag.startY;
+        const dtSec = dy / pxPerSec;
+        seekTo(editDrag.origCurrentTime + dtSec);
+        return;
+      }
+
+      const note = editDrag.noteRef;
+      if (!note) return;
+
+      if (editDrag.mode === 'move') {
+        const dx = x - editDrag.startX;
+        const dy = y - editDrag.startY;
+        if (Math.abs(dx) < 3 && Math.abs(dy) < 3 && !editDrag.modified) return;
+
+        if (!editDrag.undoPushed) {
+          pushUndoSnapshot();
+          editDrag.undoPushed = true;
+        }
+        editDrag.modified = true;
+
+        const newMidi = xToNearestMidi(x);
+        if (newMidi !== note.midi) {
+          note.midi = newMidi;
+          note.name = midiToName(newMidi);
+          audioEngine.playNote(newMidi, 0.3, note.velocity || 0.8);
+        }
+
+        const rawNewTime = editDrag.origTime - (dy / pxPerSec);
+        note.time = snapTimeToGrid(rawNewTime);
+        syncEditorInspectorUI();
+      } else if (editDrag.mode === 'resize') {
+        if (!editDrag.undoPushed) {
+          pushUndoSnapshot();
+          editDrag.undoPushed = true;
+        }
+        editDrag.modified = true;
+
+        const rawEndTime = state.currentTime + (strikeY - y) / pxPerSec;
+        const snappedEnd = snapTimeToGrid(rawEndTime);
+        const newDur = Math.max(0.06, Math.min(8.0, snappedEnd - note.time));
+        note.duration = Math.round(newDur * 1000) / 1000;
+        syncEditorInspectorUI();
+      }
     }
   });
 
@@ -816,21 +1298,66 @@
       userNoteOff(pointerMidis[e.pointerId]);
       delete pointerMidis[e.pointerId];
     }
+    if (editDrag && editDrag.pointerId === e.pointerId) {
+      const finishedDrag = editDrag;
+      editDrag = null;
+      if (finishedDrag.modified && finishedDrag.noteRef) {
+        commitSongEdit(finishedDrag.noteRef);
+      }
+    }
   }
   canvas.addEventListener('pointerup', releasePointer);
   canvas.addEventListener('pointercancel', releasePointer);
 
-  // Computer Keyboard Support
+  // Mouse Wheel / Trackpad Scrolling on Runway in Edit Mode
+  canvas.addEventListener('wheel', function (e) {
+    if (state.viewMode === 'edit') {
+      e.preventDefault();
+      const pxPerSec = Math.max(40, strikeY / state.horizonSec);
+      seekTo(state.currentTime - (e.deltaY / pxPerSec));
+    }
+  }, { passive: false });
+
+  // Computer Keyboard Support & Edit Mode Shortcuts
   const KEY_OFFSETS = { a: 0, w: 1, s: 2, e: 3, d: 4, f: 5, t: 6, g: 7, y: 8, h: 9, u: 10, j: 11, k: 12, o: 13, l: 14 };
   const heldKeys = {};
   window.addEventListener('keydown', function (e) {
     if (e.target && (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT')) return;
+    if (state.viewMode === 'home') return;
+
+    const k = String(e.key || '').toLowerCase();
+
+    // Edit Mode Undo / Redo & Note Deletion / Transpose Shortcuts
+    if (state.viewMode === 'edit') {
+      if ((e.ctrlKey || e.metaKey) && k === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) redoEdit();
+        else undoEdit();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && k === 'y') {
+        e.preventDefault();
+        redoEdit();
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedNoteIndex >= 0) {
+        e.preventDefault();
+        pushUndoSnapshot();
+        state.song.notes.splice(state.selectedNoteIndex, 1);
+        state.selectedNoteIndex = -1;
+        commitSongEdit(null);
+        return;
+      }
+    }
+
     if (e.code === 'Space') {
       e.preventDefault();
+      if (state.viewMode === 'edit') {
+        setViewMode('play');
+      }
       setPlaying(!state.isPlaying);
       return;
     }
-    const k = String(e.key || '').toLowerCase();
     if (!e.ctrlKey && !e.metaKey && !e.altKey && (k === 'q' || k === 'm')) {
       setHudMinimized(!state.hudMinimized);
       return;
@@ -905,29 +1432,251 @@
   } catch (e) {}
 
   /********************************************************************
-   * UI BINDINGS & INTERACTIVE CONTROLS
+   * PHASE 4A: HOME LIBRARY, VIEW SWITCHER & EDITOR TOOLBAR BINDINGS
    ********************************************************************/
-  function registerCustomSongInSelect(songObj) {
-    if (!songObj || !songObj.id) return;
-    SONGS[songObj.id] = songObj;
-    const sel = document.getElementById('songSelect');
-    if (!sel) return;
-    let existingOpt = null;
-    for (let i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === songObj.id) {
-        existingOpt = sel.options[i];
-        break;
+  const homeView = document.getElementById('homeView');
+  const homeSearchInput = document.getElementById('homeSearchInput');
+  const homeSongGrid = document.getElementById('homeSongGrid');
+  const homeOpenAiModalBtn = document.getElementById('homeOpenAiModalBtn');
+  const backToHomeBtn = document.getElementById('backToHomeBtn');
+  const toggleEditModeBtn = document.getElementById('toggleEditModeBtn');
+  const editorToolbar = document.getElementById('editorToolbar');
+  const hudPanel = document.getElementById('hudPanel');
+  const hudToggleBtn = document.getElementById('hudToggleBtn');
+  const hudMiniSummary = document.getElementById('hudMiniSummary');
+
+  function downloadSongMidi(songObj) {
+    if (!songObj || !audioTranscriber) return;
+    try {
+      const blob = audioTranscriber.exportSongToMidiBlob(songObj);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const safeName = String(songObj.title || 'KeyFlow_Song')
+        .replace(/[^a-zA-Z0-9_\-\s]/g, '')
+        .trim()
+        .replace(/\s+/g, '_') || 'KeyFlow_Song';
+      a.href = url;
+      a.download = safeName + '.mid';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 3000);
+    } catch (err) {
+      console.warn('MIDI Export error:', err);
+    }
+  }
+
+  function deleteOrResetSong(id) {
+    const s = SONGS[id];
+    if (!s) return;
+    if (s.isCustom) {
+      if (audioTranscriber && audioTranscriber.customSongStore) {
+        audioTranscriber.customSongStore.deleteSong(id);
+      }
+      delete SONGS[id];
+      if (state.activeSongId === id) {
+        loadSongById('let_it_be');
+      }
+      renderHomeSongGrid();
+    } else if (FACTORY_BUILTIN_SONGS[id]) {
+      SONGS[id] = JSON.parse(JSON.stringify(FACTORY_BUILTIN_SONGS[id]));
+      if (audioTranscriber && audioTranscriber.customSongStore) {
+        audioTranscriber.customSongStore.deleteSong(id);
+      }
+      if (state.activeSongId === id) {
+        loadSongById(id);
+      }
+      renderHomeSongGrid();
+    }
+  }
+
+  function getSongSourceCategory(songObj) {
+    if (!songObj) return 'builtin';
+    const src = String(songObj.source || '').toLowerCase();
+    if (src.indexOf('ai') !== -1) return 'ai';
+    if (src.indexOf('midi') !== -1) return 'midi';
+    if (songObj.isCustom) return 'midi';
+    return 'builtin';
+  }
+
+  function renderHomeSongGrid() {
+    if (!homeSongGrid) return;
+    homeSongGrid.innerHTML = '';
+
+    const allIds = Object.keys(SONGS);
+    const customList = [];
+    const builtinList = [];
+
+    for (let i = 0; i < allIds.length; i++) {
+      const id = allIds[i];
+      const s = SONGS[id];
+      if (!s || !Array.isArray(s.notes)) continue;
+      if (!s.id) s.id = id;
+      if (s.isCustom) {
+        customList.push(s);
+      } else {
+        builtinList.push(s);
       }
     }
-    const labelPrefix = (songObj.source && songObj.source.indexOf('ai') === 0) ? '★ [AI] ' : '★ ';
-    const labelText = songObj.title.indexOf('★') === 0 ? songObj.title : (labelPrefix + songObj.title);
-    if (existingOpt) {
-      existingOpt.textContent = labelText;
+
+    customList.sort(function (a, b) {
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
+
+    const orderedSongs = customList.concat(builtinList);
+    const query = String(state.homeSearch || '').trim().toLowerCase();
+    const filter = state.homeFilter || 'all';
+
+    const matchedSongs = orderedSongs.filter(function (s) {
+      const cat = getSongSourceCategory(s);
+      if (filter !== 'all' && cat !== filter) return false;
+      if (query && String(s.title || '').toLowerCase().indexOf(query) === -1) return false;
+      return true;
+    });
+
+    if (matchedSongs.length === 0) {
+      const emptyEl = document.createElement('div');
+      emptyEl.className = 'song-grid-empty';
+      emptyEl.textContent = 'No songs match this filter. Upload a .MID file or convert an audio song with AI Audio!';
+      homeSongGrid.appendChild(emptyEl);
+      return;
+    }
+
+    matchedSongs.forEach(function (s) {
+      const cat = getSongSourceCategory(s);
+      const card = document.createElement('div');
+      card.className = 'song-card';
+
+      const topDiv = document.createElement('div');
+      topDiv.className = 'song-card-top';
+
+      const badgesRow = document.createElement('div');
+      badgesRow.className = 'song-card-badges';
+
+      const srcBadge = document.createElement('span');
+      if (cat === 'ai') {
+        srcBadge.className = 'song-badge ai';
+        srcBadge.textContent = 'AI Audio';
+      } else if (cat === 'midi') {
+        srcBadge.className = 'song-badge midi';
+        srcBadge.textContent = 'MIDI Upload';
+      } else {
+        srcBadge.className = 'song-badge builtin';
+        srcBadge.textContent = 'Built-In Classic';
+      }
+      badgesRow.appendChild(srcBadge);
+
+      if (s.isModifiedBuiltin) {
+        const editBadge = document.createElement('span');
+        editBadge.className = 'song-badge edited';
+        editBadge.textContent = 'Edited';
+        badgesRow.appendChild(editBadge);
+      }
+
+      const titleEl = document.createElement('h3');
+      titleEl.className = 'song-card-title';
+      titleEl.textContent = s.title;
+
+      const metaEl = document.createElement('div');
+      metaEl.className = 'song-card-meta';
+      const bpmNum = Math.round(s.bpm || 120);
+      metaEl.textContent = formatTime(s.duration) + ' • ' + s.notes.length + ' notes • ' + bpmNum + ' BPM';
+
+      topDiv.appendChild(badgesRow);
+      topDiv.appendChild(titleEl);
+      topDiv.appendChild(metaEl);
+
+      const actionsRow = document.createElement('div');
+      actionsRow.className = 'song-card-actions';
+
+      const playBtn = document.createElement('button');
+      playBtn.type = 'button';
+      playBtn.className = 'ui-btn ui-btn-emerald card-play-btn';
+      playBtn.textContent = '▶ Play';
+      playBtn.addEventListener('click', function () {
+        loadSongById(s.id);
+        setViewMode('play');
+      });
+
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'ui-btn ui-btn-accent';
+      editBtn.textContent = '✎ Edit Notes';
+      editBtn.addEventListener('click', function () {
+        loadSongById(s.id);
+        setViewMode('edit');
+      });
+
+      const midiBtn = document.createElement('button');
+      midiBtn.type = 'button';
+      midiBtn.className = 'ui-btn';
+      midiBtn.title = 'Export 2-Track Standard .MID File';
+      midiBtn.textContent = '⬇ .MID';
+      midiBtn.addEventListener('click', function () {
+        downloadSongMidi(s);
+      });
+
+      actionsRow.appendChild(playBtn);
+      actionsRow.appendChild(editBtn);
+      actionsRow.appendChild(midiBtn);
+
+      if (s.isCustom || s.isModifiedBuiltin) {
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'ui-btn ui-btn-danger';
+        delBtn.title = s.isCustom ? 'Delete custom song from library' : 'Reset built-in song to factory default';
+        delBtn.textContent = s.isCustom ? '🗑 Delete' : '↺ Reset';
+        delBtn.addEventListener('click', function () {
+          deleteOrResetSong(s.id);
+        });
+        actionsRow.appendChild(delBtn);
+      }
+
+      card.appendChild(topDiv);
+      card.appendChild(actionsRow);
+      homeSongGrid.appendChild(card);
+    });
+  }
+
+  function setViewMode(mode, songId) {
+    if (songId && SONGS[songId]) {
+      loadSongById(songId);
+    }
+    state.viewMode = mode;
+
+    if (homeView) {
+      homeView.classList.toggle('hidden', mode !== 'home');
+    }
+
+    if (mode === 'home') {
+      setPlaying(false);
+      renderHomeSongGrid();
+      return;
+    }
+
+    if (mode === 'edit') {
+      setPlaying(false);
+      if (hudPanel) hudPanel.style.display = 'none';
+      if (editorToolbar) editorToolbar.style.display = 'flex';
+      if (toggleEditModeBtn) {
+        toggleEditModeBtn.textContent = '▶ Back to Play';
+        toggleEditModeBtn.className = 'ui-btn ui-btn-emerald';
+        toggleEditModeBtn.title = 'Return to Play Mode at current position';
+      }
+      syncEditorInspectorUI();
+      syncUndoRedoUI();
+      rebuildKeyboardGeometry();
     } else {
-      const opt = document.createElement('option');
-      opt.value = songObj.id;
-      opt.textContent = labelText;
-      sel.appendChild(opt);
+      // 'play' mode
+      if (editorToolbar) editorToolbar.style.display = 'none';
+      if (hudPanel) hudPanel.style.display = '';
+      if (toggleEditModeBtn) {
+        toggleEditModeBtn.textContent = '✎ Edit Notes';
+        toggleEditModeBtn.className = 'ui-btn ui-btn-accent';
+        toggleEditModeBtn.title = 'Open Visual Note Editor';
+      }
+      resetNoteTriggersBefore(state.currentTime);
+      rebuildKeyboardGeometry();
     }
   }
 
@@ -937,22 +1686,28 @@
     setPlaying(false);
     state.activeSongId = id;
     state.song = s;
+    if (!s.bpm) s.bpm = 120;
+    if (typeof s.gridOffset !== 'number') s.gridOffset = 0.8;
+    if (!s.beatsPerBar) s.beatsPerBar = 4;
+
     state.currentTime = 0;
     state.loopA = Math.min(2.0, s.duration * 0.12);
     state.loopB = Math.min(s.duration * 0.48, s.duration - 1.0);
     state.loopPassCount = 1;
     state.passHadLongWaitStall = false;
     state.waitStartedAtMs = null;
-    document.getElementById('songTitleHeader').textContent = s.title;
 
-    const sel = document.getElementById('songSelect');
-    if (sel && sel.value !== id) {
-      sel.value = id;
-    }
+    state.selectedNoteIndex = -1;
+    state.undoStack = [];
+    state.redoStack = [];
+
+    document.getElementById('songTitleHeader').textContent = s.title;
 
     const delBtn = document.getElementById('deleteCustomSongBtn');
     if (delBtn) {
-      delBtn.style.display = s.isCustom ? 'inline-flex' : 'none';
+      delBtn.style.display = (s.isCustom || s.isModifiedBuiltin) ? 'inline-flex' : 'none';
+      const span = delBtn.querySelector('span') || delBtn;
+      span.textContent = s.isCustom ? 'Delete Song' : 'Reset Song';
     }
 
     resetNoteTriggersBefore(0);
@@ -960,11 +1715,170 @@
     rebuildKeyboardGeometry();
     syncTimelineUI();
     syncLoopUI();
+    syncEditorInspectorUI();
+    syncUndoRedoUI();
   }
 
-  document.getElementById('songSelect').addEventListener('change', function (e) {
-    loadSongById(e.target.value);
+  // Home View & Top Bar Navigation Listeners
+  if (backToHomeBtn) {
+    backToHomeBtn.addEventListener('click', function () {
+      setViewMode('home');
+    });
+  }
+
+  if (toggleEditModeBtn) {
+    toggleEditModeBtn.addEventListener('click', function () {
+      if (state.viewMode === 'edit') {
+        setViewMode('play');
+      } else {
+        setViewMode('edit');
+      }
+    });
+  }
+
+  if (homeSearchInput) {
+    homeSearchInput.addEventListener('input', function (e) {
+      state.homeSearch = e.target.value || '';
+      renderHomeSongGrid();
+    });
+  }
+
+  document.querySelectorAll('.home-filter-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.homeFilter = btn.getAttribute('data-filter') || 'all';
+      document.querySelectorAll('.home-filter-btn').forEach(function (b) {
+        b.classList.toggle('active', b === btn);
+      });
+      renderHomeSongGrid();
+    });
   });
+
+  // Visual Note Editor Toolbar Listeners
+  const toolSelectBtn = document.getElementById('toolSelectBtn');
+  const toolAddBtn = document.getElementById('toolAddBtn');
+  const toolDeleteBtn = document.getElementById('toolDeleteBtn');
+  const editorSnapSelect = document.getElementById('editorSnapSelect');
+  const editorUndoBtn = document.getElementById('editorUndoBtn');
+  const editorRedoBtn = document.getElementById('editorRedoBtn');
+  const editorBpmInput = document.getElementById('editorBpmInput');
+  const editorGridLeftBtn = document.getElementById('editorGridLeftBtn');
+  const editorGridRightBtn = document.getElementById('editorGridRightBtn');
+  const inspectorHandBtn = document.getElementById('inspectorHandBtn');
+  const inspectorSemiDownBtn = document.getElementById('inspectorSemiDownBtn');
+  const inspectorSemiUpBtn = document.getElementById('inspectorSemiUpBtn');
+  const inspectorOctDownBtn = document.getElementById('inspectorOctDownBtn');
+  const inspectorOctUpBtn = document.getElementById('inspectorOctUpBtn');
+  const inspectorDeleteNoteBtn = document.getElementById('inspectorDeleteNoteBtn');
+
+  function setEditorTool(toolName) {
+    state.editorTool = toolName;
+    [toolSelectBtn, toolAddBtn, toolDeleteBtn].forEach(function (btn) {
+      if (!btn) return;
+      btn.classList.toggle('active', btn.getAttribute('data-tool') === toolName);
+    });
+  }
+
+  if (toolSelectBtn) {
+    toolSelectBtn.addEventListener('click', function () { setEditorTool('select'); });
+  }
+  if (toolAddBtn) {
+    toolAddBtn.addEventListener('click', function () { setEditorTool('add'); });
+  }
+  if (toolDeleteBtn) {
+    toolDeleteBtn.addEventListener('click', function () { setEditorTool('delete'); });
+  }
+
+  if (editorSnapSelect) {
+    editorSnapSelect.addEventListener('change', function (e) {
+      state.editorSnapBeats = parseFloat(e.target.value) || 0;
+    });
+  }
+
+  if (editorUndoBtn) {
+    editorUndoBtn.addEventListener('click', function () { undoEdit(); });
+  }
+  if (editorRedoBtn) {
+    editorRedoBtn.addEventListener('click', function () { redoEdit(); });
+  }
+
+  if (editorBpmInput) {
+    editorBpmInput.addEventListener('change', function (e) {
+      const val = Math.max(40, Math.min(240, parseInt(e.target.value, 10) || 120));
+      e.target.value = val;
+      pushUndoSnapshot();
+      state.song.bpm = val;
+      const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
+      commitSongEdit(keepRef);
+    });
+  }
+
+  if (editorGridLeftBtn) {
+    editorGridLeftBtn.addEventListener('click', function () {
+      pushUndoSnapshot();
+      const curOff = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
+      state.song.gridOffset = Math.max(0, Math.round((curOff - 0.05) * 1000) / 1000);
+      const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
+      commitSongEdit(keepRef);
+    });
+  }
+
+  if (editorGridRightBtn) {
+    editorGridRightBtn.addEventListener('click', function () {
+      pushUndoSnapshot();
+      const curOff = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
+      state.song.gridOffset = Math.round((curOff + 0.05) * 1000) / 1000;
+      const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
+      commitSongEdit(keepRef);
+    });
+  }
+
+  function transposeSelectedNote(semitones) {
+    const idx = state.selectedNoteIndex;
+    if (idx < 0 || idx >= state.song.notes.length) return;
+    const note = state.song.notes[idx];
+    const nextMidi = Math.max(21, Math.min(108, note.midi + semitones));
+    if (nextMidi === note.midi) return;
+    pushUndoSnapshot();
+    note.midi = nextMidi;
+    note.name = midiToName(nextMidi);
+    audioEngine.playNote(nextMidi, 0.35, note.velocity || 0.8);
+    commitSongEdit(note);
+  }
+
+  if (inspectorHandBtn) {
+    inspectorHandBtn.addEventListener('click', function () {
+      const idx = state.selectedNoteIndex;
+      if (idx < 0 || idx >= state.song.notes.length) return;
+      const note = state.song.notes[idx];
+      pushUndoSnapshot();
+      note.hand = (note.hand === 'L') ? 'R' : 'L';
+      commitSongEdit(note);
+    });
+  }
+
+  if (inspectorSemiDownBtn) {
+    inspectorSemiDownBtn.addEventListener('click', function () { transposeSelectedNote(-1); });
+  }
+  if (inspectorSemiUpBtn) {
+    inspectorSemiUpBtn.addEventListener('click', function () { transposeSelectedNote(1); });
+  }
+  if (inspectorOctDownBtn) {
+    inspectorOctDownBtn.addEventListener('click', function () { transposeSelectedNote(-12); });
+  }
+  if (inspectorOctUpBtn) {
+    inspectorOctUpBtn.addEventListener('click', function () { transposeSelectedNote(12); });
+  }
+
+  if (inspectorDeleteNoteBtn) {
+    inspectorDeleteNoteBtn.addEventListener('click', function () {
+      const idx = state.selectedNoteIndex;
+      if (idx < 0 || idx >= state.song.notes.length) return;
+      pushUndoSnapshot();
+      state.song.notes.splice(idx, 1);
+      state.selectedNoteIndex = -1;
+      commitSongEdit(null);
+    });
+  }
 
   document.getElementById('rangeModeSelect').addEventListener('change', function (e) {
     state.rangeMode = e.target.value;
@@ -984,20 +1898,26 @@
         parsed.isCustom = true;
         parsed.source = 'midi-upload';
         parsed.createdAt = Date.now();
-        registerCustomSongInSelect(parsed);
-        loadSongById(id);
+        SONGS[id] = parsed;
         if (audioTranscriber && audioTranscriber.customSongStore) {
           audioTranscriber.customSongStore.saveSong(parsed);
         }
+        renderHomeSongGrid();
+        loadSongById(id);
+        setViewMode('play');
       } catch (err) {
         console.warn('MIDI parse error:', err);
       }
     };
     reader.readAsArrayBuffer(file);
+    e.target.value = '';
   });
 
   // Play / Pause & Restart
   document.getElementById('playPauseBtn').addEventListener('click', function () {
+    if (state.viewMode === 'edit') {
+      setViewMode('play');
+    }
     setPlaying(!state.isPlaying);
   });
   document.getElementById('restartBtn').addEventListener('click', function () {
@@ -1005,10 +1925,6 @@
   });
 
   // Speed Selector & Collapsible HUD Panel
-  const hudPanel = document.getElementById('hudPanel');
-  const hudToggleBtn = document.getElementById('hudToggleBtn');
-  const hudMiniSummary = document.getElementById('hudMiniSummary');
-
   function setHudMinimized(minimized) {
     state.hudMinimized = !!minimized;
     if (hudPanel) {
@@ -1226,10 +2142,10 @@
   if (resplitHandsBtn) {
     resplitHandsBtn.addEventListener('click', function () {
       if (state.song && Array.isArray(state.song.notes)) {
+        pushUndoSnapshot();
         assignHandsSmart(state.song.notes);
-        if (state.song.isCustom && audioTranscriber && audioTranscriber.customSongStore) {
-          audioTranscriber.customSongStore.saveSong(state.song);
-        }
+        const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
+        commitSongEdit(keepRef);
         const span = resplitHandsBtn.querySelector('span') || resplitHandsBtn;
         const origText = 'Re-split Hands (Smart AI)';
         span.textContent = '✓ Hands Re-split (Smart AI)';
@@ -1244,47 +2160,15 @@
   const exportMidiBtn = document.getElementById('exportMidiBtn');
   if (exportMidiBtn) {
     exportMidiBtn.addEventListener('click', function () {
-      if (!state.song || !audioTranscriber) return;
-      try {
-        const blob = audioTranscriber.exportSongToMidiBlob(state.song);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        const safeName = String(state.song.title || 'KeyFlow_Song')
-          .replace(/[^a-zA-Z0-9_\-\s]/g, '')
-          .trim()
-          .replace(/\s+/g, '_') || 'KeyFlow_Song';
-        a.href = url;
-        a.download = safeName + '.mid';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(function () { URL.revokeObjectURL(url); }, 3000);
-      } catch (err) {
-        console.warn('MIDI Export error:', err);
-      }
+      downloadSongMidi(state.song);
     });
   }
 
-  // Delete Custom / Transcribed Song from Persistent Library
+  // Delete Custom Song or Reset Modified Built-In Song from Settings Popover
   const deleteCustomSongBtn = document.getElementById('deleteCustomSongBtn');
   if (deleteCustomSongBtn) {
     deleteCustomSongBtn.addEventListener('click', function () {
-      const curId = state.activeSongId;
-      const curSong = SONGS[curId];
-      if (!curSong || !curSong.isCustom) return;
-      if (audioTranscriber && audioTranscriber.customSongStore) {
-        audioTranscriber.customSongStore.deleteSong(curId);
-      }
-      delete SONGS[curId];
-      const sel = document.getElementById('songSelect');
-      if (sel) {
-        for (let i = sel.options.length - 1; i >= 0; i--) {
-          if (sel.options[i].value === curId) {
-            sel.remove(i);
-          }
-        }
-      }
-      loadSongById('let_it_be');
+      deleteOrResetSong(state.activeSongId);
       settingsPopover.classList.remove('open');
     });
   }
@@ -1293,7 +2177,6 @@
    * PHASE 3: AI AUDIO-TO-MIDI TRANSCRIBER MODAL ("BRING YOUR OWN SONG")
    ********************************************************************/
   const transcriberModal = document.getElementById('transcriberModal');
-  const openTranscriberModalBtn = document.getElementById('openTranscriberModalBtn');
   const closeTranscriberModalBtn = document.getElementById('closeTranscriberModalBtn');
   const cancelTranscribeBtn = document.getElementById('cancelTranscribeBtn');
   const audioDropZone = document.getElementById('audioDropZone');
@@ -1389,8 +2272,8 @@
     }
   }
 
-  if (openTranscriberModalBtn) {
-    openTranscriberModalBtn.addEventListener('click', function () {
+  if (homeOpenAiModalBtn) {
+    homeOpenAiModalBtn.addEventListener('click', function () {
       setTranscriberModalOpen(true);
     });
   }
@@ -1505,9 +2388,7 @@
         songObj.id = id;
         songObj.isCustom = true;
         songObj.createdAt = Date.now();
-
-        registerCustomSongInSelect(songObj);
-        loadSongById(id);
+        SONGS[id] = songObj;
 
         if (audioTranscriber.customSongStore) {
           await audioTranscriber.customSongStore.saveSong(songObj);
@@ -1517,6 +2398,9 @@
         if (transcribeProgressWrap) transcribeProgressWrap.style.display = 'none';
         startTranscribeBtn.disabled = false;
         setTranscriberModalOpen(false);
+        renderHomeSongGrid();
+        loadSongById(id);
+        setViewMode('play');
       } catch (err) {
         isTranscribing = false;
         startTranscribeBtn.disabled = false;
@@ -1625,15 +2509,26 @@
   syncViewportHeight();
   syncHandIsolationUI();
   loadSongById('let_it_be');
+  setViewMode('home');
   if (audioTranscriber && audioTranscriber.customSongStore) {
     audioTranscriber.customSongStore.getAllSongs().then(function (savedList) {
       if (Array.isArray(savedList)) {
         savedList.forEach(function (item) {
           if (item && item.id && Array.isArray(item.notes) && item.notes.length > 0) {
-            item.isCustom = true;
-            registerCustomSongInSelect(item);
+            if (BUILTIN_IDS.indexOf(item.id) !== -1) {
+              item.isCustom = false;
+              item.isModifiedBuiltin = true;
+              item.source = 'builtin';
+            } else {
+              item.isCustom = true;
+            }
+            SONGS[item.id] = item;
           }
         });
+        if (SONGS[state.activeSongId]) {
+          loadSongById(state.activeSongId);
+        }
+        renderHomeSongGrid();
       }
     }).catch(function () {});
   }
