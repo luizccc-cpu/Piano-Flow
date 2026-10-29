@@ -51,10 +51,25 @@
   /********************************************************************
    * APPLICATION STATE
    ********************************************************************/
+  function getDefaultHomeLayout() {
+    try {
+      const saved = localStorage.getItem('keyflow_home_layout');
+      if (saved === 'cards' || saved === 'compact') {
+        return saved;
+      }
+    } catch (e) {}
+    const isTouchOrMobile =
+      (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+      /iPad|iPhone|iPod|Android/i.test(navigator.userAgent || '') ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    return isTouchOrMobile ? 'compact' : 'cards';
+  }
+
   const state = {
     viewMode: 'home', // 'home' | 'play' | 'edit'
     homeFilter: 'all', // 'all' | 'ai' | 'midi' | 'builtin'
     homeSearch: '',
+    homeLayout: getDefaultHomeLayout(), // 'cards' | 'compact'
 
     activeSongId: 'let_it_be',
     song: SONGS.let_it_be,
@@ -1828,6 +1843,8 @@
   const homeView = document.getElementById('homeView');
   const homeSearchInput = document.getElementById('homeSearchInput');
   const homeSongGrid = document.getElementById('homeSongGrid');
+  const homeViewCardsBtn = document.getElementById('homeViewCardsBtn');
+  const homeViewCompactBtn = document.getElementById('homeViewCompactBtn');
   const homeOpenAiModalBtn = document.getElementById('homeOpenAiModalBtn');
   const backToHomeBtn = document.getElementById('backToHomeBtn');
   const toggleEditModeBtn = document.getElementById('toggleEditModeBtn');
@@ -1835,6 +1852,31 @@
   const hudPanel = document.getElementById('hudPanel');
   const hudToggleBtn = document.getElementById('hudToggleBtn');
   const hudMiniSummary = document.getElementById('hudMiniSummary');
+
+  function syncHomeLayoutToggleUI() {
+    const isCompact = state.homeLayout === 'compact';
+    if (homeSongGrid) {
+      homeSongGrid.classList.toggle('layout-compact', isCompact);
+      homeSongGrid.classList.toggle('layout-cards', !isCompact);
+    }
+    if (homeViewCardsBtn) {
+      homeViewCardsBtn.classList.toggle('active', !isCompact);
+    }
+    if (homeViewCompactBtn) {
+      homeViewCompactBtn.classList.toggle('active', isCompact);
+    }
+  }
+
+  function setHomeLayout(layout, savePref) {
+    state.homeLayout = (layout === 'compact') ? 'compact' : 'cards';
+    if (savePref) {
+      try {
+        localStorage.setItem('keyflow_home_layout', state.homeLayout);
+      } catch (e) {}
+    }
+    syncHomeLayoutToggleUI();
+    renderHomeSongGrid();
+  }
 
   function downloadSongMidi(songObj) {
     if (!songObj || !audioTranscriber) return;
@@ -1892,6 +1934,7 @@
 
   function renderHomeSongGrid() {
     if (!homeSongGrid) return;
+    syncHomeLayoutToggleUI();
     homeSongGrid.innerHTML = '';
 
     const allIds = Object.keys(SONGS);
@@ -1944,7 +1987,9 @@
 
       const titleToggle = document.createElement('div');
       titleToggle.className = 'song-card-title-toggle';
-      titleToggle.title = 'Tap to expand song details & options';
+      titleToggle.title = state.homeLayout === 'compact'
+        ? 'Tap to expand song details & options'
+        : s.title;
 
       const chevronEl = document.createElement('span');
       chevronEl.className = 'song-card-chevron';
@@ -1957,7 +2002,9 @@
       titleToggle.appendChild(chevronEl);
       titleToggle.appendChild(titleEl);
       titleToggle.addEventListener('click', function () {
-        card.classList.toggle('expanded');
+        if (state.homeLayout === 'compact') {
+          card.classList.toggle('expanded');
+        }
       });
 
       const playBtn = document.createElement('button');
@@ -2190,6 +2237,17 @@
       renderHomeSongGrid();
     });
   });
+
+  if (homeViewCardsBtn) {
+    homeViewCardsBtn.addEventListener('click', function () {
+      setHomeLayout('cards', true);
+    });
+  }
+  if (homeViewCompactBtn) {
+    homeViewCompactBtn.addEventListener('click', function () {
+      setHomeLayout('compact', true);
+    });
+  }
 
   // Visual Note Editor Toolbar Listeners
   const toolSelectBtn = document.getElementById('toolSelectBtn');
