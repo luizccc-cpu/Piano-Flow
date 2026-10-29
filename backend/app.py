@@ -28,15 +28,18 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import urllib.request
 from pathlib import Path
 from typing import List, Dict, Any
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB limit
+ALLOWED_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".webm", ".mp4"}
 
 import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 import gradio as gr
 
@@ -72,17 +75,29 @@ BYTEDANCE_CHECKPOINT_URL = (
     "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1"
 )
 BYTEDANCE_CHECKPOINT_PATH = Path("/tmp/piano_model.pth")
+_checkpoint_lock = threading.Lock()
 
 
 def ensure_bytedance_checkpoint() -> Path:
-    """Downloads the ByteDance Piano Transcription model weights to /tmp/piano_model.pth on first use."""
+    """Thread-safely downloads the ByteDance Piano Transcription model weights to /tmp/piano_model.pth on first use."""
     if BYTEDANCE_CHECKPOINT_PATH.exists() and BYTEDANCE_CHECKPOINT_PATH.stat().st_size > 10_000_000:
         return BYTEDANCE_CHECKPOINT_PATH
 
-    tmp_download = Path("/tmp/piano_model.pth.part")
-    urllib.request.urlretrieve(BYTEDANCE_CHECKPOINT_URL, str(tmp_download))
-    tmp_download.replace(BYTEDANCE_CHECKPOINT_PATH)
-    return BYTEDANCE_CHECKPOINT_PATH
+    with _checkpoint_lock:
+        if BYTEDANCE_CHECKPOINT_PATH.exists() and BYTEDANCE_CHECKPOINT_PATH.stat().st_size > 10_000_000:
+            return BYTEDANCE_CHECKPOINT_PATH
+
+        tmp_download = Path(f"/tmp/piano_model_{os.getpid()}_{threading.get_ident()}.pth.part")
+        try:
+            urllib.request.urlretrieve(BYTEDANCE_CHECKPOINT_URL, str(tmp_download))
+            tmp_download.replace(BYTEDANCE_CHECKPOINT_PATH)
+        finally:
+            if tmp_download.exists():
+                try:
+                    tmp_download.unlink()
+                except Exception:
+                    pass
+        return BYTEDANCE_CHECKPOINT_PATH
 
 
 def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Path:
@@ -114,6 +129,12 @@ def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Path:
                 return other_wav
         except Exception as exc:
             print(f"[KeyFlow Space] Demucs stem separation fallback triggered: {exc}")
+        finally:
+            if HAS_TORCH and torch.cuda.is_available():
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
 
     if HAS_LIBROSA:
         try:
@@ -143,6 +164,12 @@ def transcribe_with_bytedance(audio_path: Path, output_midi_path: Path) -> bool:
     except Exception as exc:
         print(f"[KeyFlow Space] ByteDance transcription error (falling back to Librosa CQT): {exc}")
         return False
+    finally:
+        if HAS_TORCH and torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
 
 
 def transcribe_with_librosa_cqt_to_midi(audio_path: Path, output_midi_path: Path, sensitivity: float) -> bool:
@@ -241,7 +268,14 @@ def transcribe_with_librosa_cqt_to_midi(audio_path: Path, output_midi_path: Path
     if not notes:
         return False
 
-    pm = pretty_midi.PrettyMIDI(initial_tempo=112.0)
+    try:
+        tempo_arr = librosa.beat.tempo(y=y_harm, sr=sr)
+        raw_bpm = float(tempo_arr[0]) if hasattr(tempo_arr, "__getitem__") and len(tempo_arr) > 0 else float(tempo_arr)
+        est_bpm = float(np.clip(raw_bpm, 60.0, 180.0))
+    except Exception:
+        est_bpm = 112.0
+
+    pm = pretty_midi.PrettyMIDI(initial_tempo=est_bpm)
     piano = pretty_midi.Instrument(program=0, name="Acoustic Grand Piano")
     for n in sorted(notes, key=lambda item: (item["start"], item["midi"])):
         piano.notes.append(
@@ -260,9 +294,9 @@ def transcribe_with_librosa_cqt_to_midi(audio_path: Path, output_midi_path: Path
 @spaces.GPU(duration=90)
 def run_gpu_transcription_pipeline(
     input_path_str: str,
-    work_dir_str: str = "",
     should_isolate: bool = True,
     sens_val: float = 55.0,
+    work_dir_str: str = "",
 ) -> str:
     """
     ZeroGPU-decorated transcription pipeline.
@@ -273,11 +307,18 @@ def run_gpu_transcription_pipeline(
         raise ValueError("Missing input audio path.")
 
     input_path = Path(input_path_str)
+    safe_work_dir = None
     if work_dir_str:
-        work_dir = Path(work_dir_str)
-        work_dir.mkdir(parents=True, exist_ok=True)
-        target_audio = isolate_piano_stem(input_path, work_dir) if should_isolate else input_path
-        output_midi = work_dir / "transcribed.mid"
+        try:
+            cand = Path(work_dir_str).resolve()
+            if cand.is_relative_to(Path("/tmp").resolve()) and cand.is_dir():
+                safe_work_dir = cand
+        except Exception:
+            safe_work_dir = None
+
+    if safe_work_dir is not None:
+        target_audio = isolate_piano_stem(input_path, safe_work_dir) if should_isolate else input_path
+        output_midi = safe_work_dir / "transcribed.mid"
 
         ok = transcribe_with_bytedance(target_audio, output_midi)
         if not ok:
@@ -326,34 +367,39 @@ async def transcribe_endpoint_handler(
         sens_val = 55.0
 
     clean_title = Path(file.filename).stem or "Transcribed Song"
-    raw_suffix = Path(file.filename).suffix or ".mp3"
-    suffix = re.sub(r"[^a-zA-Z0-9.]", "", raw_suffix)[:10] or ".mp3"
+    raw_suffix = Path(file.filename).suffix.lower()
+    suffix = raw_suffix if raw_suffix in ALLOWED_SUFFIXES else ".mp3"
 
-    os.makedirs("/tmp", exist_ok=True)
-    with tempfile.TemporaryDirectory(dir="/tmp", prefix="keyflow_space_") as tmp_dir:
-        work_dir = Path(tmp_dir)
-        input_path = work_dir / f"upload{suffix}"
-        raw_bytes = await file.read()
-        if not raw_bytes:
-            raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
-        if len(raw_bytes) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail="Audio file exceeds 50 MB limit.")
-        input_path.write_bytes(raw_bytes)
+    raw_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
+    if len(raw_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Audio file exceeds 50 MB limit.")
 
-        try:
-            b64_str = run_gpu_transcription_pipeline(
+    def _sync_transcribe() -> str:
+        os.makedirs("/tmp", exist_ok=True)
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="keyflow_space_") as tmp_dir:
+            work_dir = Path(tmp_dir)
+            input_path = work_dir / f"upload{suffix}"
+            input_path.write_bytes(raw_bytes)
+            return run_gpu_transcription_pipeline(
                 str(input_path),
-                str(work_dir),
-                should_isolate,
-                sens_val,
+                should_isolate=should_isolate,
+                sens_val=sens_val,
+                work_dir_str=str(work_dir),
             )
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
 
-        return {
-            "midi_base64": b64_str,
-            "title": clean_title,
-        }
+    try:
+        b64_str = await run_in_threadpool(_sync_transcribe)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "midi_base64": b64_str,
+        "title": clean_title,
+    }
 
 
 def register_keyflow_routes(fastapi_app: FastAPI) -> FastAPI:
@@ -402,15 +448,21 @@ with gr.Blocks(title="KeyFlow AI Audio-to-MIDI Server") as demo:
     )
     with gr.Row():
         audio_in = gr.Audio(type="filepath", label="Audio File (.mp3, .wav, .m4a)")
-        work_dir_in = gr.Textbox(value="", visible=False)
         isolate_in = gr.Checkbox(value=True, label="Isolate Piano Stem (HT-Demucs)")
         sens_in = gr.Slider(minimum=15, maximum=85, value=55, step=1, label="Sensitivity (%)")
     transcribe_btn = gr.Button("Transcribe Audio to MIDI (Base64)")
     midi_b64_out = gr.Textbox(label="Base64 Standard MIDI Output")
 
+    def _gradio_transcribe(audio_file, isolate_piano, sensitivity):
+        return run_gpu_transcription_pipeline(
+            audio_file,
+            should_isolate=isolate_piano,
+            sens_val=sensitivity,
+        )
+
     transcribe_btn.click(
-        fn=run_gpu_transcription_pipeline,
-        inputs=[audio_in, work_dir_in, isolate_in, sens_in],
+        fn=_gradio_transcribe,
+        inputs=[audio_in, isolate_in, sens_in],
         outputs=midi_b64_out,
         api_name="transcribe",
     )

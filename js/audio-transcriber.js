@@ -299,13 +299,7 @@
     ];
 
     const notes = (song && Array.isArray(song.notes)) ? song.notes : [];
-    let minNoteTime = 0.8;
-    if (notes.length > 0) {
-      minNoteTime = notes.reduce(function (min, n) {
-        return Math.min(min, typeof n.time === 'number' ? n.time : 0.8);
-      }, (notes[0] && typeof notes[0].time === 'number') ? notes[0].time : 0.8);
-    }
-    const minOffset = Math.max(0, Math.min(0.8, minNoteTime));
+    const minOffset = notes.length ? Math.min(0.8, Math.max(0, Math.min.apply(null, notes.map(n => n.time || 0)))) : 0.8;
 
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];

@@ -1501,27 +1501,28 @@
 
       if (state.waitMode && state.waitingMidis.has(midi)) {
         isHit = true;
-      } else if (state.song && Array.isArray(state.song.notes)) {
+      }
+      if (state.song && Array.isArray(state.song.notes)) {
         const curT = state.currentTime;
         const tol = 0.28;
         for (let i = 0; i < state.song.notes.length; i++) {
           const n = state.song.notes[i];
           if (n.time > curT + tol) break;
+          const handActive = !state.handIsoMaster ||
+            (n.hand === 'L' && state.leftHandOn) ||
+            (n.hand === 'R' && state.rightHandOn);
+          if (!handActive) continue;
+
           if (n.midi === midi) {
-            const handActive = !state.handIsoMaster ||
-              (n.hand === 'L' && state.leftHandOn) ||
-              (n.hand === 'R' && state.rightHandOn);
-            if (handActive) {
-              if (n.time >= curT - tol) {
-                if (!state.hitScoredNoteIndices.has(i)) {
-                  state.hitScoredNoteIndices.add(i);
-                  isHit = true;
-                  break;
-                }
+            if (n.time >= curT - tol) {
+              if (!state.hitScoredNoteIndices.has(i)) {
+                state.hitScoredNoteIndices.add(i);
+                isHit = true;
+                break;
               }
-              if (!isHit && state.hitScoredNoteIndices.has(i) && n.time <= curT + tol && (n.time + n.duration) >= curT - 0.15) {
-                isAlreadyScoredChordNote = true;
-              }
+            }
+            if (!isHit && state.hitScoredNoteIndices.has(i) && n.time <= curT + tol && (n.time + n.duration) >= curT - 0.15) {
+              isAlreadyScoredChordNote = true;
             }
           }
         }
