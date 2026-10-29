@@ -153,6 +153,7 @@
             <button id="toolSelectBtn" type="button" class="ui-btn editor-tool-btn active" data-tool="select" title="Select, Move (Pitch/Time), or Drag Top Edge to Resize Length">
               <span>↖ Select / Resize</span>
             </button>
+            <button id="toolGroupBtn" type="button" class="ui-btn editor-tool-btn" data-tool="group" title="Select multiple notes of the same pitch to merge (tap notes or drag a selection box)">☑ Group Select</button>
             <button id="toolAddBtn" type="button" class="ui-btn editor-tool-btn" data-tool="add" title="Tap & drag upward on any key lane to draw a new note">
               <span>＋ Add Note</span>
             </button>
@@ -187,7 +188,7 @@
         <div id="noteInspectorBar" class="note-inspector-bar">
           <span id="inspectorNoteLabel" class="inspector-note-label">Tap a note to inspect/edit • Drag empty runway to scroll time</span>
           <div class="inspector-actions">
-            <button id="inspectorMergeBtn" type="button" class="ui-btn ui-btn-accent" disabled title="Merge consecutive fragmented notes on this same key into one continuous note">🔗 Merge Cluster</button>
+            <button id="inspectorMergeBtn" type="button" class="ui-btn ui-btn-accent" disabled title="Merge selected notes on the same key into one continuous note">🔗 Merge Selected</button>
             <button id="inspectorCloneBtn" type="button" class="ui-btn ui-btn-emerald" disabled title="Copy this note's exact start time and length to another piano key">⧉ Copy to Key</button>
             <button id="inspectorHandBtn" type="button" class="ui-btn" disabled title="Flip Note Hand (Left Blue / Right Green)">Hand: R</button>
             <button id="inspectorSemiDownBtn" type="button" class="ui-btn" disabled title="Transpose -1 Semitone">-1</button>

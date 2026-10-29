@@ -87,9 +87,11 @@
     targetRampSpeed: 1.25,
 
     // Phase 4A: Interactive Visual Note Editor State
-    editorTool: 'select', // 'select' | 'add' | 'delete'
+    editorTool: 'select', // 'select' | 'group' | 'add' | 'delete'
     editorSnapBeats: 0.25, // 0 | 0.25 | 0.125 | 0.0625
     selectedNoteIndex: -1,
+    selectedNoteIndices: new Set(),
+    groupDragBox: null,
     isCloningNote: false,
     undoStack: [],
     redoStack: [],
@@ -472,8 +474,14 @@
       ctx.fillStyle = barGrad;
       ctx.fill();
 
-      const isSelectedInEdit = (state.viewMode === 'edit' && i === state.selectedNoteIndex);
-      ctx.shadowBlur = 0;
+      const isInGroup = (state.viewMode === 'edit' && state.selectedNoteIndices && state.selectedNoteIndices.has(i));
+      const isSelectedInEdit = (state.viewMode === 'edit' && (i === state.selectedNoteIndex || isInGroup));
+      if (isInGroup) {
+        ctx.shadowColor = '#38bdf8';
+        ctx.shadowBlur = 12;
+      } else {
+        ctx.shadowBlur = 0;
+      }
       ctx.lineWidth = isSelectedInEdit ? 2.5 : (isWaiting ? 2.2 : 1.2);
       ctx.strokeStyle = isSelectedInEdit
         ? '#ffffff'
@@ -481,9 +489,29 @@
           ? '#ffffff'
           : (n.hand === 'L' ? 'rgba(186, 230, 253, 0.85)' : 'rgba(187, 247, 208, 0.85)'));
       ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Group Select Checkmark Badge when multiple notes are selected or in Group Select tool mode
+      if (isInGroup && (state.selectedNoteIndices.size >= 2 || state.editorTool === 'group') && w >= 12 && barH >= 14) {
+        const chkR = Math.min(7, Math.max(5, w * 0.22));
+        const chkX = x + w - chkR - 2;
+        const chkY = Math.min(botY - chkR - 2, topY + chkR + 3);
+        ctx.beginPath();
+        ctx.arc(chkX, chkY, chkR, 0, Math.PI * 2);
+        ctx.fillStyle = '#38bdf8';
+        ctx.fill();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = '#ffffff';
+        ctx.stroke();
+        ctx.font = '700 ' + Math.round(chkR * 1.35) + 'px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillStyle = '#0f172a';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('✓', chkX, chkY + 0.5);
+      }
 
       // Top Resize Handle Bar when in Edit Mode (bright on selected note, subtle on others)
-      if (state.viewMode === 'edit' && w >= 12 && barH >= 14) {
+      if (state.viewMode === 'edit' && state.editorTool !== 'group' && w >= 12 && barH >= 14) {
         const handleH = isSelectedInEdit ? 8 : 5;
         const handleW = Math.max(6, w - 4);
         const handleX = x + 2;
@@ -521,6 +549,24 @@
       }
 
       ctx.restore();
+    }
+
+    // 4B. Group Select Marquee Box on Runway in Edit Mode
+    if (state.viewMode === 'edit' && state.groupDragBox) {
+      const bx = Math.min(state.groupDragBox.x0, state.groupDragBox.x1);
+      const by = Math.min(state.groupDragBox.y0, state.groupDragBox.y1);
+      const bw = Math.abs(state.groupDragBox.x1 - state.groupDragBox.x0);
+      const bh = Math.abs(state.groupDragBox.y1 - state.groupDragBox.y0);
+      if (bw > 2 || bh > 2) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.14)';
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 4]);
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.restore();
+      }
     }
 
     // 5. Glowing "NOW" Strike Line & Contact Flares
@@ -997,15 +1043,37 @@
       bpmInput.value = Math.round(state.song.bpm || 120);
     }
 
+    // Prune any out-of-range indices from selectedNoteIndices
+    if (state.selectedNoteIndices && state.selectedNoteIndices.size > 0) {
+      Array.from(state.selectedNoteIndices).forEach(function (i) {
+        if (i < 0 || i >= state.song.notes.length) {
+          state.selectedNoteIndices.delete(i);
+        }
+      });
+    }
+
+    const groupCount = state.selectedNoteIndices ? state.selectedNoteIndices.size : 0;
+    if (groupCount > 0 && (state.selectedNoteIndex < 0 || !state.selectedNoteIndices.has(state.selectedNoteIndex))) {
+      const arr = Array.from(state.selectedNoteIndices);
+      state.selectedNoteIndex = arr[arr.length - 1];
+    }
+
     const idx = state.selectedNoteIndex;
     const note = (idx >= 0 && idx < state.song.notes.length) ? state.song.notes[idx] : null;
 
-    if (!note) {
+    if (!note && groupCount === 0) {
       state.isCloningNote = false;
       if (labelEl) {
-        labelEl.textContent = 'Tap a note to inspect/edit • Drag empty runway to scroll time';
+        if (state.editorTool === 'group') {
+          labelEl.textContent = 'Group Select: Tap notes of the same pitch or drag a box to select & merge';
+        } else {
+          labelEl.textContent = 'Tap a note to inspect/edit • Drag empty runway to scroll time';
+        }
       }
-      if (mergeBtn) mergeBtn.disabled = true;
+      if (mergeBtn) {
+        mergeBtn.disabled = true;
+        mergeBtn.textContent = '🔗 Merge Selected';
+      }
       if (cloneBtn) {
         cloneBtn.disabled = true;
         cloneBtn.classList.remove('active');
@@ -1023,29 +1091,49 @@
       return;
     }
 
-    if (labelEl) {
-      if (state.isCloningNote) {
-        labelEl.textContent = 'Copy Mode: Tap any piano key or runway lane to place copy';
-      } else {
-        labelEl.textContent = note.name + ' (MIDI ' + note.midi + ') • Start: ' + note.time.toFixed(2) + 's • Len: ' + note.duration.toFixed(2) + 's';
+    if (groupCount >= 2) {
+      const firstIdx = state.selectedNoteIndices.values().next().value;
+      const firstNote = state.song.notes[firstIdx] || note;
+      const pitchName = firstNote ? (firstNote.name || midiToName(firstNote.midi)) : '';
+      if (mergeBtn) {
+        mergeBtn.disabled = false;
+        mergeBtn.textContent = '🔗 Merge Selected (' + groupCount + ')';
+      }
+      if (labelEl) {
+        labelEl.textContent = groupCount + ' × ' + pitchName + ' notes selected — ready to merge';
+      }
+    } else {
+      if (mergeBtn) {
+        mergeBtn.disabled = true;
+        mergeBtn.textContent = '🔗 Merge Selected';
+      }
+      if (labelEl && note) {
+        if (state.isCloningNote) {
+          labelEl.textContent = 'Copy Mode: Tap any piano key or runway lane to place copy';
+        } else if (state.editorTool === 'group') {
+          labelEl.textContent = '1 × ' + note.name + ' selected — tap more ' + note.name + ' notes or drag a box to merge';
+        } else {
+          labelEl.textContent = note.name + ' (MIDI ' + note.midi + ') • Start: ' + note.time.toFixed(2) + 's • Len: ' + note.duration.toFixed(2) + 's';
+        }
       }
     }
-    if (mergeBtn) mergeBtn.disabled = false;
+
     if (cloneBtn) {
-      cloneBtn.disabled = false;
+      cloneBtn.disabled = !note;
       cloneBtn.classList.toggle('active', !!state.isCloningNote);
       cloneBtn.textContent = state.isCloningNote ? 'Tap Target Key...' : '⧉ Copy to Key';
     }
-    if (handBtn) {
+    if (handBtn && note) {
       handBtn.disabled = false;
       handBtn.textContent = 'Hand: ' + (note.hand === 'L' ? 'L (Blue)' : 'R (Green)');
     }
-    if (semiDownBtn) semiDownBtn.disabled = false;
-    if (semiUpBtn) semiUpBtn.disabled = false;
-    if (octDownBtn) octDownBtn.disabled = false;
-    if (octUpBtn) octUpBtn.disabled = false;
-    if (delBtn) delBtn.disabled = false;
+    if (semiDownBtn) semiDownBtn.disabled = !note;
+    if (semiUpBtn) semiUpBtn.disabled = !note;
+    if (octDownBtn) octDownBtn.disabled = !note;
+    if (octUpBtn) octUpBtn.disabled = !note;
+    if (delBtn) delBtn.disabled = !note && groupCount === 0;
   }
+  const syncNoteInspectorUI = syncEditorInspectorUI;
 
   function pushUndoSnapshot() {
     state.undoStack.push(cloneSongSnapshot(state.song));
@@ -1055,6 +1143,7 @@
     state.redoStack = [];
     syncUndoRedoUI();
   }
+  const pushEditorUndoState = pushUndoSnapshot;
 
   function persistActiveSong() {
     if (!state.song) return;
@@ -1069,13 +1158,41 @@
 
   function commitSongEdit(keepNoteRef) {
     if (!state.song || !Array.isArray(state.song.notes)) return;
+
+    const keptGroupRefs = [];
+    if (!keepNoteRef && state.selectedNoteIndices && state.selectedNoteIndices.size > 0) {
+      state.selectedNoteIndices.forEach(function (i) {
+        if (i >= 0 && i < state.song.notes.length) {
+          keptGroupRefs.push(state.song.notes[i]);
+        }
+      });
+    }
+
     state.song.notes.sort(function (a, b) {
       return (a.time - b.time) || (a.midi - b.midi);
     });
+
     if (keepNoteRef) {
       state.selectedNoteIndex = state.song.notes.indexOf(keepNoteRef);
-    } else if (state.selectedNoteIndex >= state.song.notes.length) {
+      state.selectedNoteIndices.clear();
+      if (state.selectedNoteIndex >= 0) {
+        state.selectedNoteIndices.add(state.selectedNoteIndex);
+      }
+    } else if (keptGroupRefs.length > 0) {
+      state.selectedNoteIndices.clear();
+      keptGroupRefs.forEach(function (ref) {
+        const newIdx = state.song.notes.indexOf(ref);
+        if (newIdx >= 0) state.selectedNoteIndices.add(newIdx);
+      });
+      if (state.selectedNoteIndices.size > 0) {
+        const arr = Array.from(state.selectedNoteIndices);
+        state.selectedNoteIndex = arr[arr.length - 1];
+      } else {
+        state.selectedNoteIndex = -1;
+      }
+    } else if (state.selectedNoteIndex >= state.song.notes.length || state.selectedNoteIndex < 0) {
       state.selectedNoteIndex = -1;
+      state.selectedNoteIndices.clear();
     }
 
     let maxEnd = 0;
@@ -1116,6 +1233,8 @@
     state.song.beatsPerBar = snap.beatsPerBar || 4;
     state.song.duration = snap.duration || 15;
     state.selectedNoteIndex = -1;
+    state.selectedNoteIndices.clear();
+    state.groupDragBox = null;
     commitSongEdit(null);
   }
 
@@ -1136,6 +1255,89 @@
   const pointerMidis = {};
   let editDrag = null;
   let lastEmptyRunwayTap = { timeMs: 0, x: 0, y: 0 };
+
+  function updateGroupDragSelection(box, baseIndices) {
+    if (!box || !state.song || !Array.isArray(state.song.notes)) return;
+    const minX = Math.min(box.x0, box.x1);
+    const maxX = Math.max(box.x0, box.x1);
+    const minY = Math.min(box.y0, box.y1);
+    const maxY = Math.max(box.y0, box.y1);
+
+    const horizon = state.horizonSec;
+    const pxPerSec = strikeY / horizon;
+    const curT = state.currentTime;
+    const notes = state.song.notes;
+
+    const intersecting = [];
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      const nStart = n.time;
+      const nEnd = n.time + n.duration;
+      if (nEnd < curT - 0.04 || nStart > curT + horizon + 0.1) continue;
+
+      const kGeom = state.keyMap[n.midi];
+      if (!kGeom) continue;
+
+      const rawBotY = strikeY - (nStart - curT) * pxPerSec;
+      const rawTopY = strikeY - (nEnd - curT) * pxPerSec;
+      const botY = Math.min(strikeY, rawBotY);
+      const topY = Math.max(-16, rawTopY);
+      if (botY - topY <= 2) continue;
+
+      const nx0 = kGeom.laneX + 1.5;
+      const nx1 = nx0 + Math.max(8, kGeom.laneW - 3);
+      if (nx1 >= minX && nx0 <= maxX && botY >= minY && topY <= maxY) {
+        intersecting.push({ index: i, midi: n.midi });
+      }
+    }
+
+    let targetMidi = null;
+    if (baseIndices && baseIndices.size > 0) {
+      const firstBaseIdx = baseIndices.values().next().value;
+      if (notes[firstBaseIdx]) {
+        targetMidi = notes[firstBaseIdx].midi;
+      }
+    }
+    if (targetMidi === null) {
+      const startLaneMidi = xToNearestMidi(box.x0);
+      const hasStartLane = intersecting.some(function (item) {
+        return item.midi === startLaneMidi;
+      });
+      if (hasStartLane) {
+        targetMidi = startLaneMidi;
+      } else if (intersecting.length > 0) {
+        const counts = {};
+        let bestMidi = intersecting[0].midi;
+        let bestCount = 0;
+        for (let j = 0; j < intersecting.length; j++) {
+          const m = intersecting[j].midi;
+          counts[m] = (counts[m] || 0) + 1;
+          if (counts[m] > bestCount) {
+            bestCount = counts[m];
+            bestMidi = m;
+          }
+        }
+        targetMidi = bestMidi;
+      } else {
+        targetMidi = startLaneMidi;
+      }
+    }
+
+    state.selectedNoteIndices = new Set(baseIndices || []);
+    for (let k = 0; k < intersecting.length; k++) {
+      if (intersecting[k].midi === targetMidi) {
+        state.selectedNoteIndices.add(intersecting[k].index);
+      }
+    }
+
+    if (state.selectedNoteIndices.size > 0) {
+      const arr = Array.from(state.selectedNoteIndices);
+      state.selectedNoteIndex = arr[arr.length - 1];
+    } else {
+      state.selectedNoteIndex = -1;
+    }
+    syncEditorInspectorUI();
+  }
 
   canvas.addEventListener('pointerdown', function (e) {
     const rect = canvas.getBoundingClientRect();
@@ -1211,6 +1413,7 @@
         pushUndoSnapshot();
         state.song.notes.splice(hitNote.index, 1);
         state.selectedNoteIndex = -1;
+        state.selectedNoteIndices.clear();
         commitSongEdit(null);
       }
       return;
@@ -1231,6 +1434,8 @@
       };
       state.song.notes.push(newNote);
       state.selectedNoteIndex = state.song.notes.length - 1;
+      state.selectedNoteIndices.clear();
+      state.selectedNoteIndices.add(state.selectedNoteIndex);
       audioEngine.playNote(midi, 0.35, 0.82);
       syncEditorInspectorUI();
       editDrag = {
@@ -1252,9 +1457,74 @@
       return;
     }
 
-    // Select Tool Mode
+    // Group Select Mode (or Shift+Click in Select Mode)
+    const isGroupAction = (state.editorTool === 'group') || (state.editorTool === 'select' && e.shiftKey);
+    if (isGroupAction) {
+      if (hitNote) {
+        const tappedIdx = hitNote.index;
+        const tappedNote = state.song.notes[tappedIdx];
+        if (!tappedNote) return;
+
+        // Seed from single selectedNoteIndex if set is empty and pitch matches
+        if (state.selectedNoteIndices.size === 0 && state.selectedNoteIndex >= 0 && state.selectedNoteIndex < state.song.notes.length) {
+          const prevNote = state.song.notes[state.selectedNoteIndex];
+          if (prevNote && prevNote.midi === tappedNote.midi && state.selectedNoteIndex !== tappedIdx) {
+            state.selectedNoteIndices.add(state.selectedNoteIndex);
+          }
+        }
+
+        if (state.selectedNoteIndices.size === 0) {
+          state.selectedNoteIndices.add(tappedIdx);
+          state.selectedNoteIndex = tappedIdx;
+          audioEngine.playNote(tappedNote.midi, 0.35, tappedNote.velocity || 0.8);
+          syncEditorInspectorUI();
+        } else if (state.selectedNoteIndices.has(tappedIdx)) {
+          state.selectedNoteIndices.delete(tappedIdx);
+          if (state.selectedNoteIndices.size > 0) {
+            const rem = Array.from(state.selectedNoteIndices);
+            state.selectedNoteIndex = rem[rem.length - 1];
+          } else {
+            state.selectedNoteIndex = -1;
+          }
+          syncEditorInspectorUI();
+        } else {
+          const firstIdx = state.selectedNoteIndices.values().next().value;
+          const firstNote = state.song.notes[firstIdx];
+          const targetMidi = firstNote ? firstNote.midi : tappedNote.midi;
+
+          if (tappedNote.midi !== targetMidi) {
+            syncEditorInspectorUI();
+            const labelEl = document.getElementById('inspectorNoteLabel');
+            if (labelEl) {
+              labelEl.textContent = 'Cannot group ' + (tappedNote.name || midiToName(tappedNote.midi)) + ' with ' + midiToName(targetMidi) + ' (must be same note)';
+            }
+          } else {
+            state.selectedNoteIndices.add(tappedIdx);
+            state.selectedNoteIndex = tappedIdx;
+            audioEngine.playNote(tappedNote.midi, 0.35, tappedNote.velocity || 0.8);
+            syncEditorInspectorUI();
+          }
+        }
+        return;
+      }
+
+      // Empty runway in Group Select mode: start Marquee drag box
+      state.groupDragBox = { x0: x, y0: y, x1: x, y1: y };
+      editDrag = {
+        pointerId: e.pointerId,
+        mode: 'group-box',
+        startX: x,
+        startY: y,
+        baseIndices: new Set(state.selectedNoteIndices)
+      };
+      return;
+    }
+
+    // Single Select Tool Mode
     if (hitNote) {
       state.selectedNoteIndex = hitNote.index;
+      state.selectedNoteIndices.clear();
+      state.selectedNoteIndices.add(hitNote.index);
       const note = state.song.notes[hitNote.index];
       audioEngine.playNote(note.midi, 0.35, note.velocity || 0.8);
       syncEditorInspectorUI();
@@ -1281,6 +1551,7 @@
       }
       lastEmptyRunwayTap = { timeMs: nowMs, x: x, y: y };
       state.selectedNoteIndex = -1;
+      state.selectedNoteIndices.clear();
       syncEditorInspectorUI();
       editDrag = {
         pointerId: e.pointerId,
@@ -1309,6 +1580,17 @@
 
     if (editDrag && editDrag.pointerId === e.pointerId) {
       const pxPerSec = strikeY / state.horizonSec;
+
+      if (editDrag.mode === 'group-box') {
+        state.groupDragBox = {
+          x0: editDrag.startX,
+          y0: editDrag.startY,
+          x1: x,
+          y1: Math.min(strikeY, Math.max(0, y))
+        };
+        updateGroupDragSelection(state.groupDragBox, editDrag.baseIndices);
+        return;
+      }
 
       if (editDrag.mode === 'scroll') {
         const dy = y - editDrag.startY;
@@ -1369,6 +1651,23 @@
     if (editDrag && editDrag.pointerId === e.pointerId) {
       const finishedDrag = editDrag;
       editDrag = null;
+      if (finishedDrag.mode === 'group-box') {
+        if (state.groupDragBox) {
+          const dist = Math.hypot(
+            state.groupDragBox.x1 - state.groupDragBox.x0,
+            state.groupDragBox.y1 - state.groupDragBox.y0
+          );
+          if (dist < 5) {
+            state.selectedNoteIndices.clear();
+            state.selectedNoteIndex = -1;
+          } else {
+            updateGroupDragSelection(state.groupDragBox, finishedDrag.baseIndices);
+          }
+        }
+        state.groupDragBox = null;
+        syncEditorInspectorUI();
+        return;
+      }
       if (finishedDrag.modified && finishedDrag.noteRef) {
         commitSongEdit(finishedDrag.noteRef);
       }
@@ -1408,11 +1707,18 @@
         redoEdit();
         return;
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedNoteIndex >= 0) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && (state.selectedNoteIndex >= 0 || state.selectedNoteIndices.size > 0)) {
         e.preventDefault();
         pushUndoSnapshot();
-        state.song.notes.splice(state.selectedNoteIndex, 1);
+        if (state.selectedNoteIndices.size > 0) {
+          state.song.notes = state.song.notes.filter(function (_, i) {
+            return !state.selectedNoteIndices.has(i);
+          });
+        } else {
+          state.song.notes.splice(state.selectedNoteIndex, 1);
+        }
         state.selectedNoteIndex = -1;
+        state.selectedNoteIndices.clear();
         commitSongEdit(null);
         return;
       }
@@ -1734,6 +2040,11 @@
     }
     state.viewMode = mode;
     state.isCloningNote = false;
+    state.groupDragBox = null;
+    if (mode !== 'edit') {
+      state.selectedNoteIndices.clear();
+      state.selectedNoteIndex = -1;
+    }
 
     if (homeView) {
       homeView.classList.toggle('hidden', mode !== 'home');
@@ -1789,6 +2100,8 @@
     state.waitStartedAtMs = null;
 
     state.selectedNoteIndex = -1;
+    state.selectedNoteIndices.clear();
+    state.groupDragBox = null;
     state.isCloningNote = false;
     state.undoStack = [];
     state.redoStack = [];
@@ -1847,6 +2160,7 @@
 
   // Visual Note Editor Toolbar Listeners
   const toolSelectBtn = document.getElementById('toolSelectBtn');
+  const toolGroupBtn = document.getElementById('toolGroupBtn');
   const toolAddBtn = document.getElementById('toolAddBtn');
   const toolDeleteBtn = document.getElementById('toolDeleteBtn');
   const editorSnapSelect = document.getElementById('editorSnapSelect');
@@ -1867,7 +2181,8 @@
   function setEditorTool(toolName) {
     state.editorTool = toolName;
     state.isCloningNote = false;
-    [toolSelectBtn, toolAddBtn, toolDeleteBtn].forEach(function (btn) {
+    state.groupDragBox = null;
+    [toolSelectBtn, toolGroupBtn, toolAddBtn, toolDeleteBtn].forEach(function (btn) {
       if (!btn) return;
       btn.classList.toggle('active', btn.getAttribute('data-tool') === toolName);
     });
@@ -1876,6 +2191,9 @@
 
   if (toolSelectBtn) {
     toolSelectBtn.addEventListener('click', function () { setEditorTool('select'); });
+  }
+  if (toolGroupBtn) {
+    toolGroupBtn.addEventListener('click', function () { setEditorTool('group'); });
   }
   if (toolAddBtn) {
     toolAddBtn.addEventListener('click', function () { setEditorTool('add'); });
@@ -1943,83 +2261,54 @@
 
   if (inspectorMergeBtn) {
     inspectorMergeBtn.addEventListener('click', function () {
-      const idx = state.selectedNoteIndex;
-      if (idx < 0 || idx >= state.song.notes.length) return;
-      const selectedNote = state.song.notes[idx];
+      if (!state.selectedNoteIndices || state.selectedNoteIndices.size < 2) return;
 
-      // Gather all notes on the exact same MIDI pitch sorted by start time
-      const samePitchNotes = state.song.notes
-        .filter(function (n) { return n.midi === selectedNote.midi; })
-        .sort(function (a, b) { return a.time - b.time; });
-
-      const pos = samePitchNotes.indexOf(selectedNote);
-      if (pos === -1) return;
-
-      let startIdx = pos;
-      let endIdx = pos;
-
-      // Expand backward across consecutive same-pitch notes with <= 0.35s gap
-      while (startIdx > 0) {
-        const prev = samePitchNotes[startIdx - 1];
-        const curr = samePitchNotes[startIdx];
-        const gap = curr.time - (prev.time + prev.duration);
-        if (gap <= 0.35) {
-          startIdx--;
-        } else {
-          break;
+      const selectedNotes = [];
+      state.selectedNoteIndices.forEach(function (idx) {
+        if (idx >= 0 && idx < state.song.notes.length) {
+          selectedNotes.push(state.song.notes[idx]);
         }
-      }
-
-      // Expand forward across consecutive same-pitch notes with <= 0.35s gap
-      while (endIdx < samePitchNotes.length - 1) {
-        const curr = samePitchNotes[endIdx];
-        const next = samePitchNotes[endIdx + 1];
-        const gap = next.time - (curr.time + curr.duration);
-        if (gap <= 0.35) {
-          endIdx++;
-        } else {
-          break;
-        }
-      }
-
-      // Fallback: if no cluster within 0.35s, merge with the next nearby note on this key within 1.0s
-      if (endIdx === startIdx && pos < samePitchNotes.length - 1) {
-        const next = samePitchNotes[pos + 1];
-        const gap = next.time - (selectedNote.time + selectedNote.duration);
-        if (gap <= 1.0) {
-          endIdx = pos + 1;
-        }
-      }
-
-      if (endIdx <= startIdx) return;
-
-      pushUndoSnapshot();
-
-      const firstClusterNote = samePitchNotes[startIdx];
-      let maxEndTime = firstClusterNote.time + firstClusterNote.duration;
-      let maxVel = firstClusterNote.velocity || 0.8;
-
-      const toRemove = new Set();
-      for (let i = startIdx; i <= endIdx; i++) {
-        const n = samePitchNotes[i];
-        const nEnd = n.time + n.duration;
-        if (nEnd > maxEndTime) maxEndTime = nEnd;
-        if ((n.velocity || 0.8) > maxVel) maxVel = n.velocity || 0.8;
-        if (i > startIdx) {
-          toRemove.add(n);
-        }
-      }
-
-      firstClusterNote.duration = Math.max(0.06, Math.round((maxEndTime - firstClusterNote.time) * 1000) / 1000);
-      firstClusterNote.velocity = maxVel;
-
-      state.song.notes = state.song.notes.filter(function (n) {
-        return !toRemove.has(n);
       });
 
+      if (selectedNotes.length < 2) return;
+
+      const targetMidi = selectedNotes[0].midi;
+      for (let i = 1; i < selectedNotes.length; i++) {
+        if (selectedNotes[i].midi !== targetMidi) {
+          const labelEl = document.getElementById('inspectorNoteLabel');
+          if (labelEl) {
+            labelEl.textContent = 'Cannot merge ' + midiToName(selectedNotes[i].midi) + ' with ' + midiToName(targetMidi) + ' (must be same note)';
+          }
+          return;
+        }
+      }
+
+      pushEditorUndoState();
+
+      const startTime = Math.min.apply(null, selectedNotes.map(function (n) { return n.time; }));
+      const endTime = Math.max.apply(null, selectedNotes.map(function (n) { return n.time + n.duration; }));
+      const mergedDuration = Math.max(0.06, Math.round((endTime - startTime) * 1000) / 1000);
+      const maxVel = Math.max.apply(null, selectedNotes.map(function (n) { return n.velocity || 0.78; }));
+      const hand = selectedNotes[0].hand || (targetMidi < 60 ? 'L' : 'R');
+
+      const mergedNote = {
+        midi: targetMidi,
+        name: midiToName(targetMidi),
+        time: startTime,
+        duration: mergedDuration,
+        hand: hand,
+        velocity: maxVel
+      };
+
+      state.song.notes = state.song.notes.filter(function (_, idx) {
+        return !state.selectedNoteIndices.has(idx);
+      });
+      state.song.notes.push(mergedNote);
+
       state.isCloningNote = false;
-      audioEngine.playNote(firstClusterNote.midi, Math.min(1.2, firstClusterNote.duration), firstClusterNote.velocity || 0.8);
-      commitSongEdit(firstClusterNote);
+      state.selectedNoteIndices.clear();
+      audioEngine.playNote(mergedNote.midi, Math.min(1.2, mergedNote.duration), mergedNote.velocity);
+      commitSongEdit(mergedNote);
     });
   }
 
@@ -2062,11 +2351,17 @@
 
   if (inspectorDeleteNoteBtn) {
     inspectorDeleteNoteBtn.addEventListener('click', function () {
-      const idx = state.selectedNoteIndex;
-      if (idx < 0 || idx >= state.song.notes.length) return;
+      if (state.selectedNoteIndex < 0 && state.selectedNoteIndices.size === 0) return;
       pushUndoSnapshot();
-      state.song.notes.splice(idx, 1);
+      if (state.selectedNoteIndices.size > 0) {
+        state.song.notes = state.song.notes.filter(function (_, idx) {
+          return !state.selectedNoteIndices.has(idx);
+        });
+      } else {
+        state.song.notes.splice(state.selectedNoteIndex, 1);
+      }
       state.selectedNoteIndex = -1;
+      state.selectedNoteIndices.clear();
       commitSongEdit(null);
     });
   }
