@@ -16,11 +16,14 @@ FastAPI service providing:
 
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import List, Dict, Any
+
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB limit
 
 import numpy as np
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
@@ -281,12 +284,17 @@ async def transcribe_endpoint(
         raise HTTPException(status_code=400, detail="Missing audio filename.")
 
     should_isolate = str(isolate_piano).lower() in ("true", "1", "yes")
-    suffix = Path(file.filename).suffix or ".mp3"
+    raw_suffix = Path(file.filename).suffix or ".mp3"
+    suffix = re.sub(r"[^a-zA-Z0-9.]", "", raw_suffix)[:10] or ".mp3"
 
     with tempfile.TemporaryDirectory(prefix="keyflow_ai_") as tmp_dir:
         work_dir = Path(tmp_dir)
         input_path = work_dir / f"upload{suffix}"
         raw_bytes = await file.read()
+        if not raw_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
+        if len(raw_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Audio file exceeds 50 MB limit.")
         input_path.write_bytes(raw_bytes)
 
         target_audio = isolate_piano_with_demucs(input_path, work_dir) if should_isolate else input_path

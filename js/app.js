@@ -114,10 +114,13 @@
     // Phase 4B: Mic Listen, Chord Detector, Metronome, Count-In & Accuracy
     micListenActive: false,
     micStream: null,
+    micSource: null,
     micAnalyser: null,
     micDataArray: null,
     micFreqArray: null,
     micActiveNotes: new Set(),
+    micNoteHoldFrames: {},
+    micLastOnsetMs: {},
     preMicMutedState: false,
     lastMicTickMs: 0,
 
@@ -140,6 +143,26 @@
     userPressed: {}, // midi -> { hand, time }
     particles: []
   };
+
+  const pointerMidis = {};
+  const heldKeys = {};
+
+  function clearAllActiveInputs() {
+    state.userPressed = {};
+    state.wrongKeyFlashes = {};
+    for (const k in heldKeys) delete heldKeys[k];
+    for (const p in pointerMidis) delete pointerMidis[p];
+    if (state.micActiveNotes && state.micActiveNotes.size > 0) {
+      state.micActiveNotes.forEach(function (m) { userNoteOff(m); });
+      state.micActiveNotes.clear();
+    }
+    state.micNoteHoldFrames = {};
+  }
+
+  window.addEventListener('blur', clearAllActiveInputs);
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) clearAllActiveInputs();
+  });
 
   function formatSpeedBadge(speed) {
     const rounded = Math.round(speed * 100) / 100;
@@ -1070,6 +1093,12 @@
   function tickLoop(now) {
     const dt = Math.min(0.05, Math.max(0.001, (now - lastTimeMs) / 1000));
     lastTimeMs = now;
+
+    if (state.viewMode === 'home') {
+      requestAnimationFrame(tickLoop);
+      return;
+    }
+
     advanceClock(dt);
     renderFrame(dt);
 
@@ -1207,7 +1236,7 @@
   function updateLiveChordUI() {
     const chordBadge = document.getElementById('chordBadge');
     if (!chordBadge) return;
-    if (!state.showChordDetector || state.viewMode === 'home') {
+    if (!state.showChordDetector || state.viewMode !== 'play') {
       chordBadge.style.display = 'none';
       return;
     }
@@ -1277,10 +1306,11 @@
     const rms = Math.sqrt(sumSq / timeData.length);
 
     if (rms < 0.012) {
-      if (state.micActiveNotes.size > 0) {
+      if (state.micActiveNotes && state.micActiveNotes.size > 0) {
         state.micActiveNotes.forEach(function (m) { userNoteOff(m); });
         state.micActiveNotes.clear();
       }
+      state.micNoteHoldFrames = {};
       return;
     }
 
@@ -1296,7 +1326,7 @@
 
     for (let b = minBin; b <= maxBin; b++) {
       const val = freqData[b];
-      if (val > -58 && val > freqData[b - 1] && val > freqData[b + 1]) {
+      if (val > -65 && val > freqData[b - 1] && val > freqData[b + 1]) {
         const alpha = freqData[b - 1];
         const beta = val;
         const gamma = freqData[b + 1];
@@ -1307,7 +1337,10 @@
         if (peakHz >= 60 && peakHz <= 2200) {
           const midi = Math.round(69 + 12 * Math.log2(peakHz / 440));
           if (midi >= 36 && midi <= 96) {
-            detectedPitches.push({ midi: midi, hz: peakHz, db: val });
+            const thresh = (state.waitMode && state.waitingMidis && state.waitingMidis.has(midi)) ? -62 : -56;
+            if (val > thresh) {
+              detectedPitches.push({ midi: midi, hz: peakHz, db: val });
+            }
           }
         }
       }
@@ -1339,17 +1372,28 @@
       }
     }
 
+    const nowMs = performance.now();
     filteredMidis.forEach(function (m) {
+      state.micNoteHoldFrames[m] = 4;
       if (!state.micActiveNotes.has(m)) {
-        userNoteOn(m, 0.82);
-        state.micActiveNotes.add(m);
+        const lastOnset = state.micLastOnsetMs[m] || 0;
+        if (nowMs - lastOnset >= 110) {
+          state.micLastOnsetMs[m] = nowMs;
+          userNoteOn(m, 0.82);
+          state.micActiveNotes.add(m);
+        }
       }
     });
 
     state.micActiveNotes.forEach(function (m) {
       if (!filteredMidis.has(m)) {
-        userNoteOff(m);
-        state.micActiveNotes.delete(m);
+        if (state.micNoteHoldFrames[m] && state.micNoteHoldFrames[m] > 0) {
+          state.micNoteHoldFrames[m]--;
+        } else {
+          userNoteOff(m);
+          state.micActiveNotes.delete(m);
+          delete state.micNoteHoldFrames[m];
+        }
       }
     });
   }
@@ -1365,11 +1409,20 @@
         } catch (e) {}
         state.micStream = null;
       }
+      if (state.micSource) {
+        try { state.micSource.disconnect(); } catch (e) {}
+        state.micSource = null;
+      }
+      if (state.micAnalyser) {
+        try { state.micAnalyser.disconnect(); } catch (e) {}
+        state.micAnalyser = null;
+      }
       if (state.micActiveNotes) {
         state.micActiveNotes.forEach(function (m) { userNoteOff(m); });
         state.micActiveNotes.clear();
       }
-      state.micAnalyser = null;
+      state.micNoteHoldFrames = {};
+      state.micLastOnsetMs = {};
       state.micListenActive = false;
 
       audioEngine.muted = !!state.preMicMutedState;
@@ -1413,10 +1466,13 @@
         if (volOff) volOff.style.display = 'block';
 
         state.micStream = stream;
+        state.micSource = source;
         state.micAnalyser = analyser;
         state.micDataArray = new Float32Array(analyser.fftSize);
         state.micFreqArray = new Float32Array(analyser.frequencyBinCount);
         state.micActiveNotes = new Set();
+        state.micNoteHoldFrames = {};
+        state.micLastOnsetMs = {};
         state.micListenActive = true;
 
         if (btn) btn.classList.add('connected');
@@ -1441,6 +1497,8 @@
     // Live Practice Hit / Wrong Key Tracking
     if (state.viewMode !== 'edit' && (state.isPlaying || (state.waitMode && state.waitingMidis.size > 0))) {
       let isHit = false;
+      let isAlreadyScoredChordNote = false;
+
       if (state.waitMode && state.waitingMidis.has(midi)) {
         isHit = true;
       } else if (state.song && Array.isArray(state.song.notes)) {
@@ -1449,11 +1507,21 @@
         for (let i = 0; i < state.song.notes.length; i++) {
           const n = state.song.notes[i];
           if (n.time > curT + tol) break;
-          if (n.time >= curT - tol && n.midi === midi) {
-            if (!state.hitScoredNoteIndices.has(i)) {
-              state.hitScoredNoteIndices.add(i);
-              isHit = true;
-              break;
+          if (n.midi === midi) {
+            const handActive = !state.handIsoMaster ||
+              (n.hand === 'L' && state.leftHandOn) ||
+              (n.hand === 'R' && state.rightHandOn);
+            if (handActive) {
+              if (n.time >= curT - tol) {
+                if (!state.hitScoredNoteIndices.has(i)) {
+                  state.hitScoredNoteIndices.add(i);
+                  isHit = true;
+                  break;
+                }
+              }
+              if (!isHit && state.hitScoredNoteIndices.has(i) && n.time <= curT + tol && (n.time + n.duration) >= curT - 0.15) {
+                isAlreadyScoredChordNote = true;
+              }
             }
           }
         }
@@ -1464,7 +1532,7 @@
         state.stats.streak++;
         if (state.stats.streak > state.stats.bestStreak) state.stats.bestStreak = state.stats.streak;
         updateAccuracyUI();
-      } else {
+      } else if (!isAlreadyScoredChordNote) {
         state.stats.wrongKeys++;
         state.stats.streak = 0;
         state.wrongKeyFlashes[midi] = performance.now();
@@ -1878,7 +1946,6 @@
     applySongSnapshot(next);
   }
 
-  const pointerMidis = {};
   let editDrag = null;
   let lastEmptyRunwayTap = { timeMs: 0, x: 0, y: 0 };
 
@@ -2313,7 +2380,6 @@
 
   // Computer Keyboard Support & Edit Mode Shortcuts
   const KEY_OFFSETS = { a: 0, w: 1, s: 2, e: 3, d: 4, f: 5, t: 6, g: 7, y: 8, h: 9, u: 10, j: 11, k: 12, o: 13, l: 14 };
-  const heldKeys = {};
   window.addEventListener('keydown', function (e) {
     if (e.target && (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT')) return;
     if (state.viewMode === 'home') return;
@@ -2698,6 +2764,13 @@
   }
 
   function setViewMode(mode, songId) {
+    clearAllActiveInputs();
+    if (mode === 'home' || mode === 'edit') {
+      if (state.micListenActive) {
+        toggleMicListen();
+      }
+    }
+
     if (songId && SONGS[songId]) {
       loadSongById(songId);
     }
@@ -2775,7 +2848,7 @@
 
     state.currentTime = 0;
     state.loopA = Math.min(2.0, s.duration * 0.12);
-    state.loopB = Math.min(s.duration * 0.48, s.duration - 1.0);
+    state.loopB = Math.max(state.loopA + 2.0, Math.min(s.duration * 0.48, Math.max(state.loopA + 2.0, s.duration - 0.5)));
     state.loopPassCount = 1;
     state.passHadLongWaitStall = false;
     state.waitStartedAtMs = null;
@@ -2939,16 +3012,28 @@
   }
 
   function transposeSelectedNote(semitones) {
-    const idx = state.selectedNoteIndex;
-    if (idx < 0 || idx >= state.song.notes.length) return;
-    const note = state.song.notes[idx];
-    const nextMidi = Math.max(21, Math.min(108, note.midi + semitones));
-    if (nextMidi === note.midi) return;
+    if (!state.song || !Array.isArray(state.song.notes)) return;
+    const indices = (state.selectedNoteIndices && state.selectedNoteIndices.size > 0)
+      ? Array.from(state.selectedNoteIndices)
+      : (state.selectedNoteIndex >= 0 ? [state.selectedNoteIndex] : []);
+    if (indices.length === 0) return;
+
     pushUndoSnapshot();
-    note.midi = nextMidi;
-    note.name = midiToName(nextMidi);
-    audioEngine.playNote(nextMidi, 0.35, note.velocity || 0.8);
-    commitSongEdit(note);
+    let lastAuditionNote = null;
+    indices.forEach(function (idx) {
+      if (idx >= 0 && idx < state.song.notes.length) {
+        const note = state.song.notes[idx];
+        const nextMidi = Math.max(21, Math.min(108, note.midi + semitones));
+        note.midi = nextMidi;
+        note.name = midiToName(nextMidi);
+        lastAuditionNote = note;
+      }
+    });
+
+    if (lastAuditionNote) {
+      audioEngine.playNote(lastAuditionNote.midi, 0.35, lastAuditionNote.velocity || 0.8);
+      commitSongEdit(lastAuditionNote);
+    }
   }
 
   if (inspectorMergeBtn) {
@@ -2975,7 +3060,7 @@
         }
       }
 
-      pushEditorUndoState();
+      pushUndoSnapshot();
 
       const startTime = Math.min.apply(null, selectedNotes.map(function (n) { return n.time; }));
       const endTime = Math.max.apply(null, selectedNotes.map(function (n) { return n.time + n.duration; }));
@@ -2983,13 +3068,22 @@
       const maxVel = Math.max.apply(null, selectedNotes.map(function (n) { return n.velocity || 0.78; }));
       const hand = selectedNotes[0].hand || (targetMidi < 60 ? 'L' : 'R');
 
+      let preservedFinger = 0;
+      for (let i = 0; i < selectedNotes.length; i++) {
+        if (selectedNotes[i].finger >= 1 && selectedNotes[i].finger <= 5) {
+          preservedFinger = selectedNotes[i].finger;
+          break;
+        }
+      }
+
       const mergedNote = {
         midi: targetMidi,
         name: midiToName(targetMidi),
         time: startTime,
         duration: mergedDuration,
         hand: hand,
-        velocity: maxVel
+        velocity: maxVel,
+        finger: preservedFinger
       };
 
       state.song.notes = state.song.notes.filter(function (_, idx) {
@@ -3019,12 +3113,26 @@
 
   if (inspectorHandBtn) {
     inspectorHandBtn.addEventListener('click', function () {
-      const idx = state.selectedNoteIndex;
-      if (idx < 0 || idx >= state.song.notes.length) return;
-      const note = state.song.notes[idx];
+      if (!state.song || !Array.isArray(state.song.notes)) return;
+      const indices = (state.selectedNoteIndices && state.selectedNoteIndices.size > 0)
+        ? Array.from(state.selectedNoteIndices)
+        : (state.selectedNoteIndex >= 0 ? [state.selectedNoteIndex] : []);
+      if (indices.length === 0) return;
+
       pushUndoSnapshot();
-      note.hand = (note.hand === 'L') ? 'R' : 'L';
-      commitSongEdit(note);
+      let targetHand = null;
+      let primaryNote = null;
+      indices.forEach(function (idx) {
+        if (idx >= 0 && idx < state.song.notes.length) {
+          const note = state.song.notes[idx];
+          if (targetHand === null) {
+            targetHand = (note.hand === 'L') ? 'R' : 'L';
+            primaryNote = note;
+          }
+          note.hand = targetHand;
+        }
+      });
+      commitSongEdit(primaryNote);
     });
   }
 
@@ -3665,6 +3773,10 @@
 
   // Audio Mute Button
   document.getElementById('muteBtn').addEventListener('click', function () {
+    if (state.micListenActive && audioEngine.muted) {
+      alert('Built-in piano sound is muted while Microphone Listen Mode is active to prevent feedback loops. Turn off 🎤 Mic to restore sound.');
+      return;
+    }
     audioEngine.muted = !audioEngine.muted;
     document.getElementById('volOnSvg').style.display = audioEngine.muted ? 'none' : 'block';
     document.getElementById('volOffSvg').style.display = audioEngine.muted ? 'block' : 'none';

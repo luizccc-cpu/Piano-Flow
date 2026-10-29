@@ -391,11 +391,19 @@
       if (beats.length > 4000) break; // Safety cap for extremely long files
     }
 
+    const firstTempo = (tempoEvents && tempoEvents.length > 0) ? tempoEvents[0].usPerBeat : 500000;
+    const parsedBpm = Math.max(30, Math.min(260, Math.round(60000000 / (firstTempo || 500000))));
+    const firstTimeSig = (timeSigEvents && timeSigEvents.length > 0) ? timeSigEvents[0].numerator : 4;
+    const parsedBeatsPerBar = Math.max(1, Math.min(12, Number(firstTimeSig) || 4));
+
     return {
       title: fileName.replace(/\.(mid|midi)$/i, ''),
       notes: finalNotes,
       duration: duration,
-      beats: beats
+      beats: beats,
+      bpm: parsedBpm,
+      beatsPerBar: parsedBeatsPerBar,
+      gridOffset: 0.8
     };
   }
 

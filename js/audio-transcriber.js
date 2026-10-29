@@ -167,23 +167,36 @@
       for (let i = 0; i < rawSongs.length; i++) {
         const s = rawSongs[i];
         if (!s || !s.title || !Array.isArray(s.notes)) continue;
+        const rawId = String(s.id || ('imported_' + Date.now() + '_' + i)).replace(/[^a-zA-Z0-9_\-]/g, '_');
+        const safeBpm = Math.max(30, Math.min(260, Number(s.bpm) || 120));
+        const safeBeatsPerBar = Math.max(1, Math.min(12, Number(s.beatsPerBar) || 4));
+        const safeGridOffset = typeof s.gridOffset === 'number' ? s.gridOffset : 0.8;
+        const songDur = Math.max(5, Number(s.duration) || 30);
+        let beatsArr = Array.isArray(s.beats) ? s.beats : [];
+        if (beatsArr.length === 0 && typeof global.generateBeatGrid === 'function') {
+          beatsArr = global.generateBeatGrid(songDur, 60 / safeBpm, safeBeatsPerBar, safeGridOffset);
+        }
+
         const validSong = {
-          id: s.id || ('imported_' + Date.now() + '_' + i),
-          title: String(s.title || 'Untitled Song'),
-          notes: s.notes.map(n => ({
-            midi: Number(n.midi) || 60,
-            name: n.name || (global.midiToName ? global.midiToName(n.midi) : 'C4'),
-            time: Math.max(0, Number(n.time) || 0),
-            duration: Math.max(0.05, Number(n.duration) || 0.35),
-            hand: n.hand === 'L' ? 'L' : 'R',
-            velocity: typeof n.velocity === 'number' ? n.velocity : 0.8,
-            finger: (n.finger >= 1 && n.finger <= 5) ? n.finger : undefined
-          })),
-          duration: Math.max(5, Number(s.duration) || 30),
-          beats: Array.isArray(s.beats) ? s.beats : [],
-          bpm: Number(s.bpm) || 120,
-          gridOffset: typeof s.gridOffset === 'number' ? s.gridOffset : 0.8,
-          beatsPerBar: Number(s.beatsPerBar) || 4,
+          id: rawId,
+          title: String(s.title || 'Untitled Song').slice(0, 100),
+          notes: s.notes.map(n => {
+            const safeMidi = Math.max(21, Math.min(108, Math.round(Number(n.midi) || 60)));
+            return {
+              midi: safeMidi,
+              name: n.name || (global.midiToName ? global.midiToName(safeMidi) : 'C4'),
+              time: Math.max(0, Number(n.time) || 0),
+              duration: Math.max(0.05, Math.min(30, Number(n.duration) || 0.35)),
+              hand: n.hand === 'L' ? 'L' : 'R',
+              velocity: Math.max(0.05, Math.min(1.0, typeof n.velocity === 'number' ? n.velocity : 0.8)),
+              finger: (n.finger >= 1 && n.finger <= 5) ? Math.round(n.finger) : undefined
+            };
+          }),
+          duration: songDur,
+          beats: beatsArr,
+          bpm: safeBpm,
+          gridOffset: safeGridOffset,
+          beatsPerBar: safeBeatsPerBar,
           isCustom: s.isCustom !== undefined ? !!s.isCustom : true,
           isModifiedBuiltin: !!s.isModifiedBuiltin,
           source: s.source || 'backup-restore',
@@ -248,11 +261,14 @@
   }
 
   function exportSongToMidiUint8Array(song) {
-    const ticksPerBeat = 480; // 120 BPM => 1 beat = 0.5s => 960 ticks/sec
-    const ticksPerSec = 960;
+    const bpm = Math.max(30, Math.min(260, Math.round((song && song.bpm) || 120)));
+    const beatsPerBar = Math.max(1, Math.min(12, Math.round((song && song.beatsPerBar) || 4)));
+    const usPerBeat = Math.round(60000000 / bpm);
+    const ticksPerBeat = 480;
+    const ticksPerSec = ticksPerBeat * (bpm / 60);
 
-    // Track 0: Tempo (120 BPM = 500,000 us/beat) + Time Signature (4/4) + Title
-    const titleBytes = stringToAsciiBytes(song.title || 'KeyFlow Export');
+    // Track 0: Tempo + Time Signature + Title
+    const titleBytes = stringToAsciiBytes((song && song.title) || 'KeyFlow Export');
     const tempoTrackEvents = [
       {
         tick: 0,
@@ -262,12 +278,12 @@
       {
         tick: 0,
         order: 1,
-        bytes: [0xff, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08]
+        bytes: [0xff, 0x58, 0x04, beatsPerBar, 0x02, 0x18, 0x08]
       },
       {
         tick: 0,
         order: 2,
-        bytes: [0xff, 0x51, 0x03, 0x07, 0xa1, 0x20]
+        bytes: [0xff, 0x51, 0x03, (usPerBeat >>> 16) & 0xff, (usPerBeat >>> 8) & 0xff, usPerBeat & 0xff]
       }
     ];
 
@@ -282,11 +298,19 @@
       { tick: 0, order: 1, bytes: [0xc1, 0x00] }
     ];
 
-    const notes = Array.isArray(song.notes) ? song.notes : [];
+    const notes = (song && Array.isArray(song.notes)) ? song.notes : [];
+    let minNoteTime = 0.8;
+    if (notes.length > 0) {
+      minNoteTime = notes.reduce(function (min, n) {
+        return Math.min(min, typeof n.time === 'number' ? n.time : 0.8);
+      }, (notes[0] && typeof notes[0].time === 'number') ? notes[0].time : 0.8);
+    }
+    const minOffset = Math.max(0, Math.min(0.8, minNoteTime));
+
     for (let i = 0; i < notes.length; i++) {
       const n = notes[i];
       const midi = Math.max(21, Math.min(108, Math.round(n.midi)));
-      const startSec = Math.max(0, (n.time || 0) - 0.8);
+      const startSec = Math.max(0, (n.time || 0) - minOffset);
       const durSec = Math.max(0.08, n.duration || 0.25);
       const startTick = Math.round(startSec * ticksPerSec);
       const endTick = Math.max(startTick + 24, Math.round((startSec + durSec) * ticksPerSec));
@@ -327,7 +351,14 @@
    * 3. PYTHON AI SERVER HEALTH CHECK & REMOTE TRANSCRIPTION
    ********************************************************************/
   function normalizeServerUrl(url) {
-    return String(url || 'http://localhost:8000').trim().replace(/\/+$/, '');
+    let clean = String(url || 'http://localhost:8000').trim().replace(/\/+$/, '');
+    if (/^(javascript|data|file|vbscript):/i.test(clean)) {
+      return 'http://localhost:8000';
+    }
+    if (!/^https?:\/\//i.test(clean)) {
+      clean = 'http://' + clean;
+    }
+    return clean;
   }
 
   async function checkServerHealth(serverUrl, timeoutMs = 2500) {
@@ -415,7 +446,10 @@
           title: payload.title || file.name.replace(/\.[^/.]+$/, ''),
           notes: notes,
           duration: dur,
-          beats: global.generateBeatGrid(dur, 60 / bpm, 4, 0.8)
+          beats: global.generateBeatGrid(dur, 60 / bpm, 4, 0.8),
+          bpm: bpm,
+          beatsPerBar: 4,
+          gridOffset: 0.8
         };
       }
     } else {
@@ -429,6 +463,9 @@
 
     global.assignHandsSmart(parsedSong.notes);
     parsedSong.source = 'python-ai';
+    if (!parsedSong.bpm) parsedSong.bpm = 120;
+    if (!parsedSong.beatsPerBar) parsedSong.beatsPerBar = 4;
+    if (typeof parsedSong.gridOffset !== 'number') parsedSong.gridOffset = 0.8;
     if (onProgress) {
       onProgress({ stage: 'Neural AI transcription complete!', percent: 100 });
     }
@@ -805,6 +842,9 @@
       notes: extractedNotes,
       duration: duration,
       beats: global.generateBeatGrid(duration, 60 / estimatedBpm, 4, 0.8),
+      bpm: estimatedBpm,
+      beatsPerBar: 4,
+      gridOffset: 0.8,
       source: 'browser-ai'
     };
   }

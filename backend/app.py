@@ -24,12 +24,15 @@ except ImportError:
     spaces = _SpacesFallback()
 
 import base64
+import re
 import shutil
 import subprocess
 import tempfile
 import urllib.request
 from pathlib import Path
 from typing import List, Dict, Any
+
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB limit
 
 import numpy as np
 import soundfile as sf
@@ -323,7 +326,8 @@ async def transcribe_endpoint_handler(
         sens_val = 55.0
 
     clean_title = Path(file.filename).stem or "Transcribed Song"
-    suffix = Path(file.filename).suffix or ".mp3"
+    raw_suffix = Path(file.filename).suffix or ".mp3"
+    suffix = re.sub(r"[^a-zA-Z0-9.]", "", raw_suffix)[:10] or ".mp3"
 
     os.makedirs("/tmp", exist_ok=True)
     with tempfile.TemporaryDirectory(dir="/tmp", prefix="keyflow_space_") as tmp_dir:
@@ -332,6 +336,8 @@ async def transcribe_endpoint_handler(
         raw_bytes = await file.read()
         if not raw_bytes:
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
+        if len(raw_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Audio file exceeds 50 MB limit.")
         input_path.write_bytes(raw_bytes)
 
         try:
