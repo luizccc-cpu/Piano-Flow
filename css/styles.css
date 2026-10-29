@@ -235,6 +235,45 @@ html, body {
   box-shadow: 0 0 8px #38bdf8;
 }
 
+/* Edit Mode Centered Auto-Save Status Pill */
+.edit-autosave-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  color: #a7f3d0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  user-select: none;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.edit-autosave-banner.saving {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #e0f2fe;
+}
+
+.autosave-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.75);
+  transition: transform 0.2s, background-color 0.2s, box-shadow 0.2s;
+}
+
+.edit-autosave-banner.saving .autosave-dot {
+  background: #38bdf8;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.9);
+  transform: scale(1.25);
+}
+
 /* Thin Song Progress Line under Top Bar (matches mockup) */
 .top-progress-rail {
   width: 100%;

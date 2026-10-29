@@ -724,7 +724,7 @@
   function updateWaitBanner() {
     const banner = document.getElementById('waitBanner');
     const txt = document.getElementById('waitBannerText');
-    if (state.waitMode && state.waitingMidis.size > 0) {
+    if (state.viewMode !== 'edit' && state.waitMode && state.waitingMidis.size > 0) {
       banner.classList.add('visible');
       const list = Array.from(state.waitingMidis).sort((a, b) => a - b).map(midiToName);
       txt.textContent = 'Wait Mode: Play ' + list.join(' + ');
@@ -1145,6 +1145,22 @@
   }
   const pushEditorUndoState = pushUndoSnapshot;
 
+  let autoSaveFlashTimer = null;
+  function flashAutoSaveIndicator() {
+    const bannerEl = document.getElementById('editAutoSaveBanner');
+    const dotEl = document.getElementById('editAutoSaveDot');
+    const textEl = document.getElementById('editAutoSaveText');
+    if (!bannerEl || !textEl) return;
+    if (dotEl) dotEl.className = 'autosave-dot';
+    bannerEl.classList.add('saving');
+    textEl.textContent = 'Saving changes...';
+    if (autoSaveFlashTimer) clearTimeout(autoSaveFlashTimer);
+    autoSaveFlashTimer = setTimeout(function () {
+      bannerEl.classList.remove('saving');
+      textEl.textContent = '✓ Changes saved automatically';
+    }, 350);
+  }
+
   function persistActiveSong() {
     if (!state.song) return;
     if (!state.song.id) state.song.id = state.activeSongId || ('custom_' + Date.now());
@@ -1154,6 +1170,7 @@
     if (audioTranscriber && audioTranscriber.customSongStore) {
       audioTranscriber.customSongStore.saveSong(state.song);
     }
+    flashAutoSaveIndicator();
   }
 
   function commitSongEdit(keepNoteRef) {
@@ -2048,6 +2065,22 @@
 
     if (homeView) {
       homeView.classList.toggle('hidden', mode !== 'home');
+    }
+
+    const editAutoSaveBanner = document.getElementById('editAutoSaveBanner');
+    const editAutoSaveText = document.getElementById('editAutoSaveText');
+    const waitBannerEl = document.getElementById('waitBanner');
+    if (editAutoSaveBanner) {
+      if (mode === 'edit') {
+        editAutoSaveBanner.style.display = 'inline-flex';
+        editAutoSaveBanner.classList.remove('saving');
+        if (editAutoSaveText) editAutoSaveText.textContent = '✓ Changes saved automatically';
+      } else {
+        editAutoSaveBanner.style.display = 'none';
+      }
+    }
+    if (waitBannerEl && mode === 'edit') {
+      waitBannerEl.classList.remove('visible');
     }
 
     if (mode === 'home') {
