@@ -41,7 +41,15 @@
       const record = {
         id: songObj.id,
         title: songObj.title || 'Custom Song',
-        notes: songObj.notes || [],
+        notes: (songObj.notes || []).map(n => ({
+          midi: n.midi,
+          name: n.name,
+          time: n.time,
+          duration: n.duration,
+          hand: n.hand,
+          velocity: n.velocity,
+          finger: (n.finger >= 1 && n.finger <= 5) ? n.finger : undefined
+        })),
         duration: songObj.duration || 10,
         beats: songObj.beats || [],
         bpm: songObj.bpm || 120,
@@ -117,6 +125,74 @@
         global.localStorage.setItem(FALLBACK_KEY, JSON.stringify(filtered));
       } catch (err) {}
       return true;
+    },
+
+    async exportLibraryJson() {
+      const records = await this.getAllSongs();
+      const payload = {
+        version: '4.0',
+        app: 'KeyFlow',
+        exportedAt: new Date().toISOString(),
+        songCount: records.length,
+        songs: records
+      };
+      const jsonStr = JSON.stringify(payload, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'KeyFlow_Library_Backup.keyflow.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      return payload;
+    },
+
+    async importLibraryJson(jsonText) {
+      if (!jsonText || typeof jsonText !== 'string') {
+        throw new Error('Invalid backup file content');
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(jsonText);
+      } catch (err) {
+        throw new Error('File is not valid JSON: ' + err.message);
+      }
+      const rawSongs = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.songs) ? parsed.songs : null);
+      if (!rawSongs || rawSongs.length === 0) {
+        throw new Error('No songs found in backup file');
+      }
+      const imported = [];
+      for (let i = 0; i < rawSongs.length; i++) {
+        const s = rawSongs[i];
+        if (!s || !s.title || !Array.isArray(s.notes)) continue;
+        const validSong = {
+          id: s.id || ('imported_' + Date.now() + '_' + i),
+          title: String(s.title || 'Untitled Song'),
+          notes: s.notes.map(n => ({
+            midi: Number(n.midi) || 60,
+            name: n.name || (global.midiToName ? global.midiToName(n.midi) : 'C4'),
+            time: Math.max(0, Number(n.time) || 0),
+            duration: Math.max(0.05, Number(n.duration) || 0.35),
+            hand: n.hand === 'L' ? 'L' : 'R',
+            velocity: typeof n.velocity === 'number' ? n.velocity : 0.8,
+            finger: (n.finger >= 1 && n.finger <= 5) ? n.finger : undefined
+          })),
+          duration: Math.max(5, Number(s.duration) || 30),
+          beats: Array.isArray(s.beats) ? s.beats : [],
+          bpm: Number(s.bpm) || 120,
+          gridOffset: typeof s.gridOffset === 'number' ? s.gridOffset : 0.8,
+          beatsPerBar: Number(s.beatsPerBar) || 4,
+          isCustom: s.isCustom !== undefined ? !!s.isCustom : true,
+          isModifiedBuiltin: !!s.isModifiedBuiltin,
+          source: s.source || 'backup-restore',
+          createdAt: s.createdAt || Date.now()
+        };
+        await this.saveSong(validSong);
+        imported.push(validSong);
+      }
+      return { count: imported.length, songs: imported };
     }
   };
 

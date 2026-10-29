@@ -111,6 +111,25 @@
     undoStack: [],
     redoStack: [],
 
+    // Phase 4B: Mic Listen, Chord Detector, Metronome, Count-In & Accuracy
+    micListenActive: false,
+    micStream: null,
+    micAnalyser: null,
+    micDataArray: null,
+    micFreqArray: null,
+    micActiveNotes: new Set(),
+    preMicMutedState: false,
+    lastMicTickMs: 0,
+
+    showChordDetector: true,
+    metronomeOn: false,
+    countInOn: false,
+    isCountingIn: false,
+
+    stats: { hits: 0, misses: 0, wrongKeys: 0, streak: 0, bestStreak: 0 },
+    wrongKeyFlashes: {},
+    hitScoredNoteIndices: new Set(),
+
     minMidi: 48,
     maxMidi: 84,
     whiteKeys: [],
@@ -248,15 +267,17 @@
 
   function spawnParticles(x, w, hand) {
     if (state.particles.length > 75) return;
-    const rgb = (hand === 'L') ? '56, 189, 248' : '74, 222, 128';
-    for (let i = 0; i < 2; i++) {
+    let rgb = (hand === 'L') ? '56, 189, 248' : '74, 222, 128';
+    if (hand === 'wrong') rgb = '239, 68, 68';
+    const count = (hand === 'wrong') ? 4 : 2;
+    for (let i = 0; i < count; i++) {
       state.particles.push({
         x: x + Math.random() * w,
         y: strikeY + (Math.random() * 4 - 2),
-        vx: (Math.random() - 0.5) * 26,
-        vy: -(16 + Math.random() * 38),
-        r: 1.4 + Math.random() * 2.0,
-        alpha: 0.9,
+        vx: (Math.random() - 0.5) * (hand === 'wrong' ? 36 : 26),
+        vy: -(16 + Math.random() * (hand === 'wrong' ? 46 : 38)),
+        r: (hand === 'wrong' ? 1.6 : 1.4) + Math.random() * 2.0,
+        alpha: 0.95,
         rgb: rgb
       });
     }
@@ -544,7 +565,7 @@
         }
       }
 
-      // Explicit Note Name Badge inside every falling bar (e.g., F3, C4, A4, C5)
+      // Explicit Note Name Badge & Finger Number Badge inside every falling bar
       const badgeH = Math.min(20, Math.max(14, w * 0.52));
       if (barH >= badgeH + 2 && w >= 14) {
         const badgeW = Math.max(w - 4, 14);
@@ -560,7 +581,31 @@
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(n.name, x + w / 2, badgeY + badgeH / 2 + 0.5);
+        const labelText = (n.finger >= 1 && n.finger <= 5 && w >= 28)
+          ? (n.name + ' • ' + n.finger)
+          : n.name;
+        ctx.fillText(labelText, x + w / 2, badgeY + badgeH / 2 + 0.5);
+
+        // Circular finger badge near trailing edge if finger is assigned (1-5)
+        if (n.finger >= 1 && n.finger <= 5 && barH >= badgeH + 18) {
+          const fR = Math.min(8, Math.max(5.5, w * 0.3));
+          const fX = x + w / 2;
+          const fY = Math.min(botY - badgeH - fR - 5, topY + fR + 4);
+          if (fY > topY + fR) {
+            ctx.beginPath();
+            ctx.arc(fX, fY, fR, 0, Math.PI * 2);
+            ctx.fillStyle = '#f59e0b';
+            ctx.fill();
+            ctx.lineWidth = 1.2;
+            ctx.strokeStyle = '#ffffff';
+            ctx.stroke();
+            ctx.font = '700 ' + Math.round(fR * 1.3) + 'px -apple-system, BlinkMacSystemFont, sans-serif';
+            ctx.fillStyle = '#0f172a';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(String(n.finger), fX, fY + 0.5);
+          }
+        }
       }
 
       ctx.restore();
@@ -629,6 +674,33 @@
       ctx.restore();
     });
 
+    // Wrong Note Contact Flares (Red)
+    const nowMs = performance.now();
+    Object.keys(state.wrongKeyFlashes).forEach(mStr => {
+      const m = parseInt(mStr, 10);
+      const elapsed = nowMs - state.wrongKeyFlashes[m];
+      if (elapsed > 350) {
+        delete state.wrongKeyFlashes[m];
+        return;
+      }
+      const kGeom = state.keyMap[m];
+      if (!kGeom) return;
+      const cx = kGeom.laneX + kGeom.laneW / 2;
+      const r = kGeom.laneW * 1.1;
+      const alpha = Math.max(0, 1 - elapsed / 350);
+
+      const flare = ctx.createRadialGradient(cx, strikeY, 1, cx, strikeY, r);
+      flare.addColorStop(0, 'rgba(255, 255, 255, ' + (0.95 * alpha) + ')');
+      flare.addColorStop(0.35, 'rgba(239, 68, 68, ' + (0.85 * alpha) + ')');
+      flare.addColorStop(1, 'rgba(239, 68, 68, 0)');
+      ctx.save();
+      ctx.fillStyle = flare;
+      ctx.beginPath();
+      ctx.arc(cx, strikeY, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    });
+
     renderParticles(dt);
 
     // 6. Auto-Scaled 3D Virtual Piano Keyboard
@@ -636,6 +708,7 @@
     for (let i = 0; i < state.whiteKeys.length; i++) {
       const wk = state.whiteKeys[i];
       const act = activeKeys[wk.midi];
+      const isWrong = (state.wrongKeyFlashes[wk.midi] && (nowMs - state.wrongKeyFlashes[wk.midi] < 350));
       const kx = wk.x + 0.8;
       const ky = wk.y;
       const kw = wk.w - 1.6;
@@ -644,7 +717,11 @@
       ctx.save();
       drawRoundedRect(ctx, kx, ky, kw, kh, 5);
       const kGrad = ctx.createLinearGradient(kx, ky, kx, ky + kh);
-      if (act) {
+      if (isWrong) {
+        kGrad.addColorStop(0, '#fecaca');
+        kGrad.addColorStop(0.25, '#ef4444');
+        kGrad.addColorStop(1, '#b91c1c');
+      } else if (act) {
         if (act.hand === 'L') {
           kGrad.addColorStop(0, '#bae6fd');
           kGrad.addColorStop(0.25, '#38bdf8');
@@ -663,18 +740,18 @@
       ctx.fillStyle = kGrad;
       ctx.fill();
 
-      ctx.fillStyle = act ? (act.hand === 'L' ? '#0369a1' : '#15803d') : '#94a3b8';
+      ctx.fillStyle = isWrong ? '#991b1b' : (act ? (act.hand === 'L' ? '#0369a1' : '#15803d') : '#94a3b8');
       ctx.fillRect(kx + 1, ky + kh - 5, kw - 2, 5);
 
-      ctx.strokeStyle = '#0f172a';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = isWrong ? '#ef4444' : '#0f172a';
+      ctx.lineWidth = isWrong ? 2 : 1;
       ctx.stroke();
 
       const isC = (wk.midi % 12 === 0);
-      if ((isC || state.showAllKeyNames || act) && kw >= 15) {
+      if ((isC || state.showAllKeyNames || act || isWrong) && kw >= 15) {
         const fSize = Math.min(12.5, Math.max(8.5, kw * 0.34));
-        ctx.font = (isC || act ? '700 ' : '600 ') + fSize + 'px -apple-system, BlinkMacSystemFont, sans-serif';
-        ctx.fillStyle = act ? '#082f49' : (isC ? '#0f172a' : '#64748b');
+        ctx.font = (isC || act || isWrong ? '700 ' : '600 ') + fSize + 'px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillStyle = isWrong ? '#ffffff' : (act ? '#082f49' : (isC ? '#0f172a' : '#64748b'));
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
         ctx.fillText(wk.name, kx + kw / 2, ky + kh - 8);
@@ -686,6 +763,7 @@
     for (let i = 0; i < state.blackKeys.length; i++) {
       const bk = state.blackKeys[i];
       const act = activeKeys[bk.midi];
+      const isWrong = (state.wrongKeyFlashes[bk.midi] && (nowMs - state.wrongKeyFlashes[bk.midi] < 350));
       const kx = bk.x;
       const ky = bk.y;
       const kw = bk.w;
@@ -694,7 +772,11 @@
       ctx.save();
       drawRoundedRect(ctx, kx, ky, kw, kh, 4);
       const bGrad = ctx.createLinearGradient(kx, ky, kx, ky + kh);
-      if (act) {
+      if (isWrong) {
+        bGrad.addColorStop(0, '#f87171');
+        bGrad.addColorStop(0.35, '#dc2626');
+        bGrad.addColorStop(1, '#7f1d1d');
+      } else if (act) {
         if (act.hand === 'L') {
           bGrad.addColorStop(0, '#7dd3fc');
           bGrad.addColorStop(0.4, '#0284c7');
@@ -714,15 +796,15 @@
 
       if (kw >= 10) {
         drawRoundedRect(ctx, kx + 2, ky + 1, kw - 4, kh - 7, 2.5);
-        ctx.strokeStyle = act ? 'rgba(255, 255, 255, 0.55)' : 'rgba(255, 255, 255, 0.13)';
+        ctx.strokeStyle = isWrong ? 'rgba(255, 255, 255, 0.85)' : (act ? 'rgba(255, 255, 255, 0.55)' : 'rgba(255, 255, 255, 0.13)');
         ctx.lineWidth = 1;
         ctx.stroke();
       }
 
-      if ((state.showAllKeyNames || act) && kw >= 16) {
+      if ((state.showAllKeyNames || act || isWrong) && kw >= 16) {
         const fSize = Math.min(10, Math.max(7.5, kw * 0.36));
         ctx.font = '600 ' + fSize + 'px -apple-system, BlinkMacSystemFont, sans-serif';
-        ctx.fillStyle = act ? '#ffffff' : 'rgba(226, 232, 240, 0.85)';
+        ctx.fillStyle = (act || isWrong) ? '#ffffff' : 'rgba(226, 232, 240, 0.85)';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
         ctx.fillText(bk.name, kx + kw / 2, ky + kh - 7);
@@ -807,6 +889,31 @@
       }
     }
 
+    // Metronome Click on Musical Beat Crossing
+    if (state.metronomeOn) {
+      if (Array.isArray(state.song.beats) && state.song.beats.length > 0) {
+        for (let bIdx = 0; bIdx < state.song.beats.length; bIdx++) {
+          const b = state.song.beats[bIdx];
+          if (b.time >= prevT && b.time < nextT) {
+            audioEngine.playMetronomeClick(b.isMeasure);
+          } else if (b.time >= nextT) {
+            break;
+          }
+        }
+      } else {
+        const bpmVal = state.song.bpm || 120;
+        const bSec = (60 / bpmVal);
+        const bpb = state.song.beatsPerBar || 4;
+        const off = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0;
+        const prevBeat = Math.floor((prevT - off) / bSec);
+        const nextBeat = Math.floor((nextT - off) / bSec);
+        if (nextBeat > prevBeat) {
+          const isMeasure = ((nextBeat % bpb) + bpb) % bpb === 0;
+          audioEngine.playMetronomeClick(isMeasure);
+        }
+      }
+    }
+
     state.currentTime = nextT;
 
     for (let i = 0; i < notes.length; i++) {
@@ -839,6 +946,12 @@
       state.waitStartedAtMs = null;
       syncLoopUI();
       seekTo(state.loopA);
+      if (state.countInOn) {
+        doSetPlaying(false);
+        runCountIn(function () {
+          doSetPlaying(true);
+        });
+      }
       return;
     }
 
@@ -846,6 +959,7 @@
       state.currentTime = 0;
       resetNoteTriggersBefore(0);
       setPlaying(false);
+      resetAccuracyStats();
     }
 
     syncTimelineUI();
@@ -854,10 +968,67 @@
   function seekTo(sec) {
     state.currentTime = Math.max(0, Math.min(state.song.duration, sec));
     resetNoteTriggersBefore(state.currentTime);
+    resetAccuracyStats();
+    cancelCountIn();
     syncTimelineUI();
   }
 
+  let countInTimeouts = [];
+
+  function cancelCountIn() {
+    state.isCountingIn = false;
+    countInTimeouts.forEach(function (t) { clearTimeout(t); });
+    countInTimeouts = [];
+    const overlay = document.getElementById('countInOverlay');
+    if (overlay) overlay.style.display = 'none';
+  }
+
+  function runCountIn(onComplete) {
+    cancelCountIn();
+    state.isCountingIn = true;
+    const overlay = document.getElementById('countInOverlay');
+    if (overlay) overlay.style.display = 'flex';
+
+    const bpmVal = Math.max(30, Math.min(260, state.song.bpm || 120));
+    const beatSec = (60 / bpmVal) / Math.max(0.2, state.speed);
+    const beatsCount = state.song.beatsPerBar || 4;
+
+    for (let b = 1; b <= beatsCount; b++) {
+      const delayMs = (b - 1) * (beatSec * 1000);
+      const isDownbeat = (b === 1);
+      const tid = setTimeout(function () {
+        if (!state.isCountingIn) return;
+        if (overlay) {
+          overlay.textContent = String(b);
+          overlay.classList.remove('beat');
+          void overlay.offsetWidth;
+          overlay.classList.add('beat');
+        }
+        audioEngine.playMetronomeClick(isDownbeat);
+      }, delayMs);
+      countInTimeouts.push(tid);
+    }
+
+    const endTid = setTimeout(function () {
+      if (!state.isCountingIn) return;
+      cancelCountIn();
+      if (typeof onComplete === 'function') onComplete();
+    }, beatsCount * (beatSec * 1000));
+    countInTimeouts.push(endTid);
+  }
+
   function setPlaying(play) {
+    if (play && state.countInOn && !state.isCountingIn) {
+      runCountIn(function () {
+        doSetPlaying(true);
+      });
+      return;
+    }
+    cancelCountIn();
+    doSetPlaying(play);
+  }
+
+  function doSetPlaying(play) {
     state.isPlaying = play;
     if (play) audioEngine.ensureContext();
     document.getElementById('playSvg').style.display = play ? 'none' : 'block';
@@ -901,7 +1072,359 @@
     lastTimeMs = now;
     advanceClock(dt);
     renderFrame(dt);
+
+    if (state.micListenActive && (now - state.lastMicTickMs >= 22)) {
+      state.lastMicTickMs = now;
+      processMicAudio();
+    }
+    updateLiveChordUI();
+
     requestAnimationFrame(tickLoop);
+  }
+
+  /********************************************************************
+   * PHASE 4B: LIVE ACCURACY TRACKING & WRONG NOTE FLASHES
+   ********************************************************************/
+  function updateAccuracyUI() {
+    const pill = document.getElementById('accuracyHudPill');
+    const pctEl = document.getElementById('accuracyPctText');
+    const streakEl = document.getElementById('streakCountText');
+    if (!pill || !pctEl || !streakEl) return;
+    const total = state.stats.hits + state.stats.wrongKeys;
+    if (total === 0) {
+      pctEl.textContent = '100%';
+      streakEl.textContent = '0 streak';
+      pill.style.display = 'none';
+      return;
+    }
+    pill.style.display = 'inline-flex';
+    const pct = Math.round((state.stats.hits / total) * 100);
+    pctEl.textContent = pct + '%';
+    streakEl.textContent = state.stats.streak + ' streak';
+  }
+
+  function resetAccuracyStats() {
+    state.stats.hits = 0;
+    state.stats.wrongKeys = 0;
+    state.stats.misses = 0;
+    state.stats.streak = 0;
+    state.stats.bestStreak = 0;
+    state.hitScoredNoteIndices.clear();
+    updateAccuracyUI();
+  }
+
+  /********************************************************************
+   * PHASE 4B: LIVE CHORD SYMBOL DETECTOR
+   ********************************************************************/
+  const NOTE_NAMES_CHORD = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+  const CHORD_FORMULAS = [
+    { suffix: '', intervals: [0, 4, 7] },         // Major
+    { suffix: 'm', intervals: [0, 3, 7] },        // Minor
+    { suffix: 'dim', intervals: [0, 3, 6] },      // Diminished
+    { suffix: 'aug', intervals: [0, 4, 8] },      // Augmented
+    { suffix: 'sus4', intervals: [0, 5, 7] },     // Sus4
+    { suffix: 'sus2', intervals: [0, 2, 7] },     // Sus2
+    { suffix: '7', intervals: [0, 4, 7, 10] },    // Dominant 7th
+    { suffix: 'maj7', intervals: [0, 4, 7, 11] }, // Major 7th
+    { suffix: 'm7', intervals: [0, 3, 7, 10] },   // Minor 7th
+    { suffix: 'dim7', intervals: [0, 3, 6, 9] },  // Diminished 7th
+    { suffix: 'm7b5', intervals: [0, 3, 6, 10] }, // Half-Diminished
+    { suffix: '6', intervals: [0, 4, 7, 9] },     // Major 6th
+    { suffix: 'm6', intervals: [0, 3, 7, 9] },    // Minor 6th
+    { suffix: 'add9', intervals: [0, 2, 4, 7] },  // Add9
+    { suffix: '9', intervals: [0, 2, 4, 7, 10] }, // Dominant 9th
+    { suffix: '5', intervals: [0, 7] }            // Power chord
+  ];
+
+  function detectChordSymbol(midiList) {
+    if (!Array.isArray(midiList) || midiList.length === 0) return null;
+    const sorted = Array.from(midiList).sort(function (a, b) { return a - b; });
+    const bassMidi = sorted[0];
+    const bassNoteName = NOTE_NAMES_CHORD[bassMidi % 12];
+
+    const uniquePcs = Array.from(new Set(sorted.map(function (m) { return m % 12; })));
+    if (uniquePcs.length === 1) {
+      return {
+        symbol: bassNoteName,
+        notes: bassNoteName
+      };
+    }
+
+    const notesStr = uniquePcs.map(function (pc) { return NOTE_NAMES_CHORD[pc]; }).join(' • ');
+
+    let bestMatch = null;
+
+    for (let rIdx = 0; rIdx < uniquePcs.length; rIdx++) {
+      const root = uniquePcs[rIdx];
+      const relIntervals = new Set(uniquePcs.map(function (pc) { return (pc - root + 12) % 12; }));
+
+      for (let f = 0; f < CHORD_FORMULAS.length; f++) {
+        const formula = CHORD_FORMULAS[f];
+        let hasAll = true;
+        for (let iv = 0; iv < formula.intervals.length; iv++) {
+          if (!relIntervals.has(formula.intervals[iv])) {
+            hasAll = false;
+            break;
+          }
+        }
+        if (hasAll) {
+          const isExact = (relIntervals.size === formula.intervals.length);
+          const isRootBass = (root === (bassMidi % 12));
+          const score = (isExact ? 100 : 0) + formula.intervals.length * 10 + (isRootBass ? 5 : 0);
+          if (!bestMatch || score > bestMatch.score) {
+            bestMatch = {
+              root: root,
+              suffix: formula.suffix,
+              score: score,
+              isExact: isExact
+            };
+          }
+        }
+      }
+    }
+
+    if (bestMatch) {
+      const rootName = NOTE_NAMES_CHORD[bestMatch.root];
+      let sym = rootName + bestMatch.suffix;
+      if (bestMatch.root !== (bassMidi % 12)) {
+        sym += '/' + bassNoteName;
+      }
+      return {
+        symbol: sym,
+        notes: notesStr
+      };
+    }
+
+    return {
+      symbol: bassNoteName,
+      notes: notesStr
+    };
+  }
+
+  let lastChordSymbol = '';
+
+  function updateLiveChordUI() {
+    const chordBadge = document.getElementById('chordBadge');
+    if (!chordBadge) return;
+    if (!state.showChordDetector || state.viewMode === 'home') {
+      chordBadge.style.display = 'none';
+      return;
+    }
+
+    const activeMidis = new Set();
+    Object.keys(state.userPressed).forEach(function (mStr) {
+      activeMidis.add(parseInt(mStr, 10));
+    });
+    if (state.micListenActive && state.micActiveNotes) {
+      state.micActiveNotes.forEach(function (m) { activeMidis.add(m); });
+    }
+    if (state.isPlaying && state.song && Array.isArray(state.song.notes)) {
+      const curT = state.currentTime;
+      for (let i = 0; i < state.song.notes.length; i++) {
+        const n = state.song.notes[i];
+        if (n.time > curT + 0.05) break;
+        if (n.time <= curT + 0.04 && (n.time + n.duration) >= curT - 0.02) {
+          const handActive = !state.handIsoMaster ||
+            (n.hand === 'L' && state.leftHandOn) ||
+            (n.hand === 'R' && state.rightHandOn);
+          if (handActive) activeMidis.add(n.midi);
+        }
+      }
+    }
+
+    if (activeMidis.size === 0) {
+      chordBadge.style.display = 'none';
+      lastChordSymbol = '';
+      return;
+    }
+
+    const chord = detectChordSymbol(Array.from(activeMidis));
+    if (!chord) {
+      chordBadge.style.display = 'none';
+      lastChordSymbol = '';
+      return;
+    }
+
+    const symEl = document.getElementById('chordSymbolText');
+    const notesEl = document.getElementById('chordNotesText');
+    if (symEl) symEl.textContent = chord.symbol;
+    if (notesEl) notesEl.textContent = chord.notes;
+
+    if (chord.symbol !== lastChordSymbol) {
+      lastChordSymbol = chord.symbol;
+      chordBadge.classList.remove('pop');
+      void chordBadge.offsetWidth;
+      chordBadge.classList.add('pop');
+    }
+    chordBadge.style.display = 'flex';
+  }
+
+  /********************************************************************
+   * PHASE 4B: REAL-TIME MICROPHONE LISTEN MODE (CABLE-FREE IPAD)
+   ********************************************************************/
+  function processMicAudio() {
+    if (!state.micListenActive || !state.micAnalyser || !state.micDataArray || !state.micFreqArray) return;
+    const analyser = state.micAnalyser;
+    const timeData = state.micDataArray;
+    const freqData = state.micFreqArray;
+    analyser.getFloatTimeDomainData(timeData);
+
+    let sumSq = 0;
+    for (let i = 0; i < timeData.length; i++) {
+      sumSq += timeData[i] * timeData[i];
+    }
+    const rms = Math.sqrt(sumSq / timeData.length);
+
+    if (rms < 0.012) {
+      if (state.micActiveNotes.size > 0) {
+        state.micActiveNotes.forEach(function (m) { userNoteOff(m); });
+        state.micActiveNotes.clear();
+      }
+      return;
+    }
+
+    analyser.getFloatFrequencyData(freqData);
+    const audioCtx = audioEngine.ensureContext();
+    const sampleRate = (audioCtx && audioCtx.sampleRate) ? audioCtx.sampleRate : 44100;
+    const binHz = sampleRate / analyser.fftSize;
+
+    const minBin = Math.max(2, Math.floor(60 / binHz));
+    const maxBin = Math.min(freqData.length - 2, Math.ceil(2200 / binHz));
+
+    const detectedPitches = [];
+
+    for (let b = minBin; b <= maxBin; b++) {
+      const val = freqData[b];
+      if (val > -58 && val > freqData[b - 1] && val > freqData[b + 1]) {
+        const alpha = freqData[b - 1];
+        const beta = val;
+        const gamma = freqData[b + 1];
+        const denom = (2 * beta - alpha - gamma);
+        const delta = denom !== 0 ? (gamma - alpha) / (2 * denom) : 0;
+        const peakHz = (b + delta) * binHz;
+
+        if (peakHz >= 60 && peakHz <= 2200) {
+          const midi = Math.round(69 + 12 * Math.log2(peakHz / 440));
+          if (midi >= 36 && midi <= 96) {
+            detectedPitches.push({ midi: midi, hz: peakHz, db: val });
+          }
+        }
+      }
+    }
+
+    detectedPitches.sort(function (a, b) { return b.db - a.db; });
+
+    const filteredMidis = new Set();
+    const acceptedPeaks = [];
+
+    for (let i = 0; i < detectedPitches.length; i++) {
+      const p = detectedPitches[i];
+      let isHarmonic = false;
+      for (let j = 0; j < acceptedPeaks.length; j++) {
+        const lower = acceptedPeaks[j];
+        if (lower.hz < p.hz) {
+          const ratio = p.hz / lower.hz;
+          const nearestInt = Math.round(ratio);
+          if (nearestInt >= 2 && nearestInt <= 6 && Math.abs(ratio - nearestInt) < 0.05) {
+            isHarmonic = true;
+            break;
+          }
+        }
+      }
+      if (!isHarmonic) {
+        acceptedPeaks.push(p);
+        filteredMidis.add(p.midi);
+        if (acceptedPeaks.length >= 4) break;
+      }
+    }
+
+    filteredMidis.forEach(function (m) {
+      if (!state.micActiveNotes.has(m)) {
+        userNoteOn(m, 0.82);
+        state.micActiveNotes.add(m);
+      }
+    });
+
+    state.micActiveNotes.forEach(function (m) {
+      if (!filteredMidis.has(m)) {
+        userNoteOff(m);
+        state.micActiveNotes.delete(m);
+      }
+    });
+  }
+
+  async function toggleMicListen() {
+    const btn = document.getElementById('micListenBtn');
+    const txt = document.getElementById('micStatusText');
+
+    if (state.micListenActive) {
+      if (state.micStream) {
+        try {
+          state.micStream.getTracks().forEach(function (t) { t.stop(); });
+        } catch (e) {}
+        state.micStream = null;
+      }
+      if (state.micActiveNotes) {
+        state.micActiveNotes.forEach(function (m) { userNoteOff(m); });
+        state.micActiveNotes.clear();
+      }
+      state.micAnalyser = null;
+      state.micListenActive = false;
+
+      audioEngine.muted = !!state.preMicMutedState;
+      const volOn = document.getElementById('volOnSvg');
+      const volOff = document.getElementById('volOffSvg');
+      if (volOn) volOn.style.display = audioEngine.muted ? 'none' : 'block';
+      if (volOff) volOff.style.display = audioEngine.muted ? 'block' : 'none';
+
+      if (btn) btn.classList.remove('connected');
+      if (txt) txt.textContent = '🎤 Mic';
+    } else {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          alert('Microphone access is not supported in this browser.');
+          return;
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false
+          }
+        });
+
+        const actx = audioEngine.ensureContext();
+        if (actx.state === 'suspended') {
+          await actx.resume();
+        }
+
+        const source = actx.createMediaStreamSource(stream);
+        const analyser = actx.createAnalyser();
+        analyser.fftSize = 4096;
+        analyser.smoothingTimeConstant = 0.2;
+        source.connect(analyser);
+
+        state.preMicMutedState = !!audioEngine.muted;
+        audioEngine.muted = true;
+        const volOn = document.getElementById('volOnSvg');
+        const volOff = document.getElementById('volOffSvg');
+        if (volOn) volOn.style.display = 'none';
+        if (volOff) volOff.style.display = 'block';
+
+        state.micStream = stream;
+        state.micAnalyser = analyser;
+        state.micDataArray = new Float32Array(analyser.fftSize);
+        state.micFreqArray = new Float32Array(analyser.frequencyBinCount);
+        state.micActiveNotes = new Set();
+        state.micListenActive = true;
+
+        if (btn) btn.classList.add('connected');
+        if (txt) txt.textContent = '🎤 Mic: On';
+      } catch (err) {
+        alert('Could not enable microphone listen mode: ' + (err.message || err));
+      }
+    }
   }
 
   /********************************************************************
@@ -914,6 +1437,41 @@
 
     const kGeom = state.keyMap[midi];
     if (kGeom) spawnParticles(kGeom.laneX, kGeom.laneW, hand);
+
+    // Live Practice Hit / Wrong Key Tracking
+    if (state.viewMode !== 'edit' && (state.isPlaying || (state.waitMode && state.waitingMidis.size > 0))) {
+      let isHit = false;
+      if (state.waitMode && state.waitingMidis.has(midi)) {
+        isHit = true;
+      } else if (state.song && Array.isArray(state.song.notes)) {
+        const curT = state.currentTime;
+        const tol = 0.28;
+        for (let i = 0; i < state.song.notes.length; i++) {
+          const n = state.song.notes[i];
+          if (n.time > curT + tol) break;
+          if (n.time >= curT - tol && n.midi === midi) {
+            if (!state.hitScoredNoteIndices.has(i)) {
+              state.hitScoredNoteIndices.add(i);
+              isHit = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (isHit) {
+        state.stats.hits++;
+        state.stats.streak++;
+        if (state.stats.streak > state.stats.bestStreak) state.stats.bestStreak = state.stats.streak;
+        updateAccuracyUI();
+      } else {
+        state.stats.wrongKeys++;
+        state.stats.streak = 0;
+        state.wrongKeyFlashes[midi] = performance.now();
+        if (kGeom) spawnParticles(kGeom.laneX, kGeom.laneW, 'wrong');
+        updateAccuracyUI();
+      }
+    }
 
     if (state.waitMode && state.waitingMidis.has(midi)) {
       if (state.waitStartedAtMs !== null && (performance.now() - state.waitStartedAtMs) > 3000) {
@@ -1025,7 +1583,8 @@
           time: n.time,
           duration: n.duration,
           hand: n.hand || (n.midi < 60 ? 'L' : 'R'),
-          velocity: n.velocity || 0.78
+          velocity: n.velocity || 0.78,
+          finger: (n.finger >= 1 && n.finger <= 5) ? n.finger : undefined
         };
       }),
       bpm: song.bpm || 120,
@@ -1103,6 +1662,10 @@
       if (octDownBtn) octDownBtn.disabled = true;
       if (octUpBtn) octUpBtn.disabled = true;
       if (delBtn) delBtn.disabled = true;
+      document.querySelectorAll('.finger-opt-btn').forEach(function (fBtn) {
+        fBtn.disabled = true;
+        fBtn.classList.remove('active');
+      });
       return;
     }
 
@@ -1128,7 +1691,8 @@
         } else if (state.editorTool === 'group') {
           labelEl.textContent = '1 × ' + note.name + ' selected — tap more ' + note.name + ' notes or drag a box to merge';
         } else {
-          labelEl.textContent = note.name + ' (MIDI ' + note.midi + ') • Start: ' + note.time.toFixed(2) + 's • Len: ' + note.duration.toFixed(2) + 's';
+          const fingerSuffix = (note.finger >= 1 && note.finger <= 5) ? (' • Finger: ' + note.finger) : '';
+          labelEl.textContent = note.name + ' (MIDI ' + note.midi + ')' + fingerSuffix + ' • Start: ' + note.time.toFixed(2) + 's • Len: ' + note.duration.toFixed(2) + 's';
         }
       }
     }
@@ -1147,8 +1711,37 @@
     if (octDownBtn) octDownBtn.disabled = !note;
     if (octUpBtn) octUpBtn.disabled = !note;
     if (delBtn) delBtn.disabled = !note && groupCount === 0;
+
+    const curFinger = (note && note.finger >= 1 && note.finger <= 5) ? note.finger : 0;
+    document.querySelectorAll('.finger-opt-btn').forEach(function (fBtn) {
+      fBtn.disabled = false;
+      const fNum = parseInt(fBtn.getAttribute('data-finger'), 10);
+      fBtn.classList.toggle('active', fNum === curFinger);
+    });
   }
   const syncNoteInspectorUI = syncEditorInspectorUI;
+
+  function setFingerForSelectedNotes(fingerNum) {
+    if (!state.song || !Array.isArray(state.song.notes)) return;
+    const targets = [];
+    if (state.selectedNoteIndices && state.selectedNoteIndices.size > 0) {
+      state.selectedNoteIndices.forEach(function (idx) {
+        if (state.song.notes[idx]) targets.push(state.song.notes[idx]);
+      });
+    } else if (state.selectedNoteIndex >= 0 && state.song.notes[state.selectedNoteIndex]) {
+      targets.push(state.song.notes[state.selectedNoteIndex]);
+    }
+    if (targets.length === 0) return;
+
+    pushUndoSnapshot();
+    const fVal = (fingerNum >= 1 && fingerNum <= 5) ? fingerNum : undefined;
+    targets.forEach(function (n) {
+      n.finger = fVal;
+    });
+
+    commitSongEdit(null);
+    syncEditorInspectorUI();
+  }
 
   function pushUndoSnapshot() {
     state.undoStack.push(cloneSongSnapshot(state.song));
@@ -1257,7 +1850,8 @@
         time: n.time,
         duration: n.duration,
         hand: n.hand,
-        velocity: n.velocity
+        velocity: n.velocity,
+        finger: (n.finger >= 1 && n.finger <= 5) ? n.finger : undefined
       };
     });
     state.song.bpm = snap.bpm || 120;
@@ -1754,6 +2348,11 @@
         commitSongEdit(null);
         return;
       }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key >= '0' && e.key <= '5' && (state.selectedNoteIndex >= 0 || state.selectedNoteIndices.size > 0)) {
+        e.preventDefault();
+        setFingerForSelectedNotes(parseInt(e.key, 10));
+        return;
+      }
     }
 
     if (e.code === 'Space') {
@@ -2166,6 +2765,8 @@
     const s = SONGS[id];
     if (!s) return;
     setPlaying(false);
+    cancelCountIn();
+    resetAccuracyStats();
     state.activeSongId = id;
     state.song = s;
     if (!s.bpm) s.bpm = 120;
@@ -2457,6 +3058,15 @@
     });
   }
 
+  // Phase 4B: Finger Number Selector Buttons in Note Inspector
+  document.querySelectorAll('.finger-opt-btn').forEach(function (fBtn) {
+    fBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const f = parseInt(this.getAttribute('data-finger'), 10);
+      setFingerForSelectedNotes(isNaN(f) ? 0 : f);
+    });
+  });
+
   document.getElementById('rangeModeSelect').addEventListener('change', function (e) {
     state.rangeMode = e.target.value;
     calculateAutoRange(state);
@@ -2541,6 +3151,35 @@
     if (hudMiniSummary) hudMiniSummary.textContent = speedStr;
     syncLoopUI();
   });
+
+  // Metronome & Count-In Buttons
+  const metronomeBtn = document.getElementById('metronomeBtn');
+  if (metronomeBtn) {
+    metronomeBtn.addEventListener('click', function () {
+      state.metronomeOn = !state.metronomeOn;
+      metronomeBtn.classList.toggle('active', state.metronomeOn);
+      metronomeBtn.style.color = state.metronomeOn ? '#38bdf8' : '';
+      metronomeBtn.style.borderColor = state.metronomeOn ? 'rgba(56, 189, 248, 0.6)' : '';
+    });
+  }
+
+  const countInBtn = document.getElementById('countInBtn');
+  if (countInBtn) {
+    countInBtn.addEventListener('click', function () {
+      state.countInOn = !state.countInOn;
+      countInBtn.classList.toggle('active', state.countInOn);
+      countInBtn.style.color = state.countInOn ? '#38bdf8' : '';
+      countInBtn.style.borderColor = state.countInOn ? 'rgba(56, 189, 248, 0.6)' : '';
+    });
+  }
+
+  // Microphone Listen Mode Button
+  const micListenBtn = document.getElementById('micListenBtn');
+  if (micListenBtn) {
+    micListenBtn.addEventListener('click', function () {
+      toggleMicListen();
+    });
+  }
 
   // Wait Mode Switch
   document.getElementById('waitSwitch').addEventListener('click', function (e) {
@@ -2674,6 +3313,18 @@
       });
     });
   });
+
+  const chordDetectorSwitch = document.getElementById('chordDetectorSwitch');
+  if (chordDetectorSwitch) {
+    chordDetectorSwitch.addEventListener('click', function (e) {
+      state.showChordDetector = !state.showChordDetector;
+      e.currentTarget.classList.toggle('active-blue', state.showChordDetector);
+      const chordBadge = document.getElementById('chordBadge');
+      if (chordBadge && !state.showChordDetector) {
+        chordBadge.style.display = 'none';
+      }
+    });
+  }
 
   const measureGridSwitch = document.getElementById('measureGridSwitch');
   if (measureGridSwitch) {
@@ -2828,6 +3479,48 @@
       aiServerStatusPill.className = 'server-status-pill offline';
       aiServerStatusPill.textContent = 'Offline (Browser Engine Ready)';
     }
+  }
+
+  // Phase 4B: Song Library Backup (.keyflow.json) & Restore
+  const exportLibraryBtn = document.getElementById('exportLibraryBtn');
+  if (exportLibraryBtn) {
+    exportLibraryBtn.addEventListener('click', async function () {
+      try {
+        if (!audioTranscriber || !audioTranscriber.customSongStore || !audioTranscriber.customSongStore.exportLibraryJson) {
+          alert('Custom song store is not available.');
+          return;
+        }
+        await audioTranscriber.customSongStore.exportLibraryJson();
+      } catch (err) {
+        alert('Failed to export library: ' + (err && err.message ? err.message : err));
+      }
+    });
+  }
+
+  const importLibraryInput = document.getElementById('importLibraryInput');
+  if (importLibraryInput) {
+    importLibraryInput.addEventListener('change', async function (e) {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        if (!audioTranscriber || !audioTranscriber.customSongStore || !audioTranscriber.customSongStore.importLibraryJson) {
+          throw new Error('Custom song store is not available');
+        }
+        const result = await audioTranscriber.customSongStore.importLibraryJson(text);
+        if (result && Array.isArray(result.songs)) {
+          result.songs.forEach(function (s) {
+            SONGS[s.id] = s;
+          });
+        }
+        renderHomeSongGrid();
+        alert('Successfully restored ' + (result ? result.count : 0) + ' song(s) to your library!');
+      } catch (err) {
+        alert('Failed to restore library: ' + (err && err.message ? err.message : err));
+      } finally {
+        importLibraryInput.value = '';
+      }
+    });
   }
 
   if (homeOpenAiModalBtn) {

@@ -53,6 +53,9 @@
             <button id="homeOpenAiModalBtn" type="button" class="ui-btn ui-btn-emerald" title="Convert an MP3, WAV, M4A, or OGG song into piano notes">
               <span>+ AI Audio Song</span>
             </button>
+            <button id="exportLibraryBtn" type="button" class="ui-btn" title="Export all custom and edited songs as a single .keyflow.json backup file">⬇ Backup Library</button>
+            <label for="importLibraryInput" id="importLibraryBtn" class="ui-btn" title="Restore or merge songs from a .keyflow.json backup file">⬆ Restore Library</label>
+            <input id="importLibraryInput" type="file" accept=".json,.keyflow.json" style="display:none;" />
           </div>
         </div>
       </div>
@@ -82,9 +85,20 @@
 
       <!-- Right Controls: Live MIDI Status, Range Mode & Settings Icon -->
       <div class="top-right">
+        <button id="micListenBtn" type="button" class="midi-status-badge mic-listen-btn" title="Toggle Microphone Listen Mode (auto-mutes internal synth)">
+          <span id="micStatusDot" class="midi-status-dot"></span>
+          <span id="micStatusText">🎤 Mic</span>
+        </button>
+
         <div id="midiStatusBadge" class="midi-status-badge" title="Connect a USB or Bluetooth MIDI keyboard">
           <span id="midiStatusDot" class="midi-status-dot"></span>
           <span id="midiStatusText">MIDI</span>
+        </div>
+
+        <div id="accuracyHudPill" class="accuracy-hud-pill" style="display:none;" title="Live Practice Accuracy &amp; Consecutive Hit Streak">
+          <span id="accuracyPctText">100%</span>
+          <span class="accuracy-sep">•</span>
+          <span id="streakCountText">0 streak</span>
         </div>
 
         <select id="rangeModeSelect" class="ui-select" title="Dynamic Virtual Piano Range">
@@ -121,6 +135,13 @@
       </div>
 
       <div class="hud-divider"></div>
+
+      <div class="hud-row" style="font-size:12px;">
+        <span>Show Live Chord Symbols</span>
+        <button id="chordDetectorSwitch" class="switch-btn active-blue" aria-label="Toggle Live Chord Symbols">
+          <span class="switch-thumb"></span>
+        </button>
+      </div>
 
       <div class="hud-row" style="font-size:12px;">
         <span>Show Measure &amp; Beat Grid</span>
@@ -160,6 +181,15 @@
 
     <!-- ==================== MAIN STAGE (5s RUNWAY + PIANO) ==================== -->
     <main class="stage-container" id="stageContainer">
+      <!-- Live Chord Symbol Detector Badge (Above Keyboard / Runway) -->
+      <div id="chordBadge" class="chord-detector-badge" style="display:none;">
+        <span id="chordSymbolText" class="chord-symbol-text">C</span>
+        <span id="chordNotesText" class="chord-notes-text">C - E - G</span>
+      </div>
+
+      <!-- 1-Bar Count-In Overlay (1 - 2 - 3 - 4) -->
+      <div id="countInOverlay" class="count-in-overlay" style="display:none;">1</div>
+
       <!-- ==================== PHASE 4A: INTERACTIVE VISUAL NOTE EDITOR TOOLBAR ==================== -->
       <div id="editorToolbar" class="editor-toolbar" style="display:none;">
         <div class="editor-toolbar-row">
@@ -203,6 +233,15 @@
         <div id="noteInspectorBar" class="note-inspector-bar">
           <span id="inspectorNoteLabel" class="inspector-note-label">Tap a note to inspect/edit • Drag empty runway to scroll time</span>
           <div class="inspector-actions">
+            <div class="inspector-finger-group" title="Assign Finger Number (1 = Thumb .. 5 = Pinky)">
+              <span class="modal-label" style="font-size:11px;">Finger:</span>
+              <button type="button" class="ui-btn finger-opt-btn" data-finger="0">-</button>
+              <button type="button" class="ui-btn finger-opt-btn" data-finger="1">1</button>
+              <button type="button" class="ui-btn finger-opt-btn" data-finger="2">2</button>
+              <button type="button" class="ui-btn finger-opt-btn" data-finger="3">3</button>
+              <button type="button" class="ui-btn finger-opt-btn" data-finger="4">4</button>
+              <button type="button" class="ui-btn finger-opt-btn" data-finger="5">5</button>
+            </div>
             <button id="inspectorMergeBtn" type="button" class="ui-btn ui-btn-accent" disabled title="Merge selected notes on the same key into one continuous note">🔗 Merge Selected</button>
             <button id="inspectorCloneBtn" type="button" class="ui-btn ui-btn-emerald" disabled title="Copy this note's exact start time and length to another piano key">⧉ Copy to Key</button>
             <button id="inspectorHandBtn" type="button" class="ui-btn" disabled title="Flip Note Hand (Left Blue / Right Green)">Hand: R</button>
@@ -266,6 +305,20 @@
           <div class="hand-pills-row">
             <button id="leftHandBtn" class="hand-pill hand-pill-l inactive" title="Toggle Left Hand (Blue)">L</button>
             <button id="rightHandBtn" class="hand-pill hand-pill-r inactive" title="Toggle Right Hand (Green)">R</button>
+          </div>
+
+          <!-- Metronome & Count-In Row -->
+          <div class="hud-row" style="font-size:12px;">
+            <div class="hud-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#cbd5e1;">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+              </svg>
+              <span>Tempo Beat</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:5px;">
+              <button id="metronomeBtn" type="button" class="ui-btn" style="padding:3px 8px; font-size:11px;" title="Toggle Audible Beat Metronome">⏱ Metronome</button>
+              <button id="countInBtn" type="button" class="ui-btn" style="padding:3px 8px; font-size:11px;" title="4-Beat Count-In before Play or Loop Restart">1-2-3-4 Count-In</button>
+            </div>
           </div>
 
           <div class="hud-divider"></div>

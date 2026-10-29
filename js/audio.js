@@ -425,6 +425,33 @@
         }
       } catch (e) {}
     }
+
+    playMetronomeClick(isDownbeat) {
+      const ctx = this.ensureContext();
+      if (!ctx) return;
+      try {
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const freq = isDownbeat ? 1150 : 820;
+        osc.type = isDownbeat ? 'triangle' : 'sine';
+        osc.frequency.setValueAtTime(freq, now);
+        osc.frequency.exponentialRampToValueAtTime(freq * 0.72, now + 0.035);
+
+        const baseVol = isDownbeat ? 0.45 : 0.32;
+        gain.gain.setValueAtTime(baseVol, now);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.035);
+
+        osc.connect(gain);
+        if (this.masterGain) {
+          gain.connect(this.masterGain);
+        } else {
+          gain.connect(ctx.destination);
+        }
+        osc.start(now);
+        osc.stop(now + 0.038);
+      } catch (e) {}
+    }
   }
 
   const audioEngine = new PureAcousticPianoEngine();

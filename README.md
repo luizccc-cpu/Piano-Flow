@@ -45,6 +45,14 @@ Built for a landscape tablet resting on your piano's music stand, KeyFlow pairs 
   * **Optional Python FastAPI / Hugging Face ZeroGPU Backend (`backend/`):** Connect to a Hugging Face ZeroGPU Gradio Space or `localhost:8000` for `HT-Demucs` piano stem separation and neural polyphonic transcription (`ByteDance Piano Transcription` / `Basic Pitch` / `Librosa CQT`).
 * **Persistent Custom Song Library & `.MID` Exporter:** Uploaded `.MID` files, AI-transcribed songs, and visual note edits are automatically saved in `IndexedDB` across sessions on your iPad, and any song can be exported as a two-track Standard `.MID` file.
 
+### 🎓 Advanced Learning Aids & Cable-Free Practice (Phase 4B)
+* **Real-Time Microphone Listen Mode (`🎤 Mic`):** Practice cable-free on any acoustic or speaker digital piano (such as a Casio CT-S200) on iPad without needing USB cables or WebMIDI. Features high-resolution Web Audio pitch detection with harmonic overtone rejection and auto-muting synth to prevent acoustic feedback loops.
+* **Live Chord Symbol Detector Badge:** Displays active chords in real time (`C`, `G/B`, `Am7`, `Fmaj7`, `Ddim`) above the runway using polyphonic pitch-class analysis with slash-bass recognition. Toggleable via Settings Popover.
+* **Audible Woodblock Metronome & 1-Bar Count-In (`1-2-3-4`):** Crisp woodblock downbeat and upbeat metronome clicks synced to song tempo. Optional 4-beat visual and audible count-in pre-roll before starting playback or loop wraps.
+* **Live Hit Accuracy %, Streak Counter & Wrong-Note Red Flash:** Real-time feedback displaying practice accuracy percentage and consecutive hit streaks. Pressing incorrect keys triggers an instant high-visibility red key flash, red contact flare, and spark burst on the keyboard.
+* **Editable Finger Number Badges (`1–5`):** Assign finger numbers (`1 = Thumb` .. `5 = Pinky`, `0 = Clear`) to notes in Edit Mode via the Note Inspector buttons or keyboard shortcuts `0`–`5`. Fingerings are displayed inside falling bars and persisted to `IndexedDB`.
+* **Full Library Backup & Restore (`.keyflow.json`):** One-click export and import of your entire custom and edited song library from the Home Screen.
+
 ---
 
 ## 🎵 Built-In Song Library
@@ -58,12 +66,12 @@ KeyFlow ships with 5 built-in arrangements ready for immediate practice and visu
 
 ---
 
-## 🗺️ Roadmap (Phase 4B — Upcoming)
-* **Live Chord Symbol Detector:** Real-time chord recognition (`C`, `G/B`, `Am7`, `Fmaj7`) displayed as notes cross the `NOW` line.
-* **Audible Metronome & Count-In:** Configurable `1-2-3-4` count-in and woodblock beat click synced to playback speed.
-* **Live MIDI Accuracy & Wrong-Note Feedback:** Visual red key flash on missed notes + end-of-pass accuracy & streak summary.
-* **Editable Finger Number Badges (`1–5`):** Assign and display fingerings inside falling note bars.
-* **Full Library `.keyflow.json` Backup & Restore:** One-click export and import of your entire custom song library.
+## 🗺️ Roadmap & Changelog
+* **Phase 1 (Complete):** Core 5s visualizer, auto-scaled keyboard, Mellow Felt Grand sound engine, A-B looping, Hand Isolation (L/R), Wait Mode, and `.MID` file upload.
+* **Phase 2 (Complete):** Smart A-B Loop Tempo Ramp (+5%), Smart Left/Right hand voice-splitting algorithm, measure & beat gridlines.
+* **Phase 3 (Complete):** Hybrid AI Audio-to-MIDI Transcription Pipeline (Hugging Face ZeroGPU / FastAPI backend + In-browser Web Audio polyphonic transcriber), persistent IndexedDB library, and standard `.MID` exporter.
+* **Phase 4A (Complete):** Home Screen Song Library view, decluttered practice top bar, interactive Visual Note Editor on runway with 30-level Undo/Redo and group merge.
+* **Phase 4B (Complete):** Real-Time Microphone Listen Mode (`🎤 Mic`), Live Chord Symbol Detector (`C`, `G/B`, `Am7`, `Fmaj7`), Audible Metronome & 1-Bar Count-In (`1-2-3-4`), Live Hit Accuracy % & Wrong-Note Red Flash, Editable Finger Number Badges (`1–5`), and Full Library `.keyflow.json` Backup & Restore.
 
 ---
 

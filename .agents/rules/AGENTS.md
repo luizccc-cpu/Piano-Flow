@@ -23,9 +23,10 @@ description: "Core architecture, UX constraints, and phased roadmap for the Fall
   - Full Home Screen Song Library view (`#homeView`) with search, source filter pills (`All`, `AI Audio`, `MIDI Uploads`, `Built-In Classics`), and song cards (`Play`, `Edit Notes`, `.MID` export, `Delete`/`Reset`).
   - Decluttered Playing / Practice top bar (`← Home`, song title, and `✎ Edit Notes` toggle).
   - Interactive Visual Note Editor (Edit Mode) directly on the 5-second falling-note runway (`#pianoCanvas`) with Select/Move/Resize, Add Note, Erase, Snap-to-Grid (`Free`, `1/4`, `1/8`, `1/16`), L/R hand flip, semitone/octave transpose, BPM & Bar 1 grid alignment, 30-step Undo/Redo, and automatic persistence to `IndexedDB` (`KeyFlowSongDB`).
-- **Phase 4B (Next):**
-  - Live Chord Symbol Detector (`C`, `G/B`, `Am7`, `Fmaj7` displayed in real time).
-  - Audible Metronome & Count-In (`1-2-3-4` pre-roll before playback or loop start).
-  - Live MIDI Accuracy & Wrong-Note Feedback + End-of-Pass Score Summary.
-  - Editable Finger Number Badges (`1–5`) on falling notes.
-  - Full Library `.keyflow.json` Backup & Restore.
+- **Phase 4B (Complete):**
+  - Real-Time Microphone Listen Mode (`🎤 Mic`) for cable-free iPad acoustic piano practice with harmonic overtone filtering and auto-muting synth feedback prevention.
+  - Live Chord Symbol Detector (`C`, `G/B`, `Am7`, `Fmaj7`) with real-time Roman/Slash-bass badge and toggle in Settings.
+  - Audible Woodblock Metronome & 1-Bar Count-In (`1-2-3-4` pre-roll before playback or loop start).
+  - Live MIDI & Keyboard Hit Accuracy %, Consecutive Streak Counter, and Wrong-Note Red Flash on keys and strike line.
+  - Editable Finger Number Badges (`1–5`) on falling notes in Edit Mode (with keyboard shortcuts `0`–`5`, inspector selector, and persistence to `IndexedDB`).
+  - Full Song Library Backup & Restore (`.keyflow.json`) from the Home Screen.
