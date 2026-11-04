@@ -50,6 +50,12 @@ except Exception:
     HAS_LIBROSA = False
 
 try:
+    from scipy.signal import butter, sosfiltfilt
+    HAS_SCIPY_SIGNAL = True
+except Exception:
+    HAS_SCIPY_SIGNAL = False
+
+try:
     import pretty_midi
     HAS_PRETTY_MIDI = True
 except Exception:
@@ -100,16 +106,97 @@ def ensure_bytedance_checkpoint() -> Path:
         return BYTEDANCE_CHECKPOINT_PATH
 
 
+def clean_isolated_piano_audio(stem_wav_path: Path, work_dir: Path) -> Path:
+    """
+    Applies post-Demucs harmonic and piano-range filtering:
+    1. Loads audio at ByteDance sample rate (16 kHz mono).
+    2. Strips residual drum/percussive transients via HPSS (margin 1.0 harm vs 2.2 perc).
+    3. Bandpasses to piano fundamental range (27.5 Hz A0 to 4400 Hz C8).
+    4. Normalizes peak amplitude and saves to piano_cleaned.wav.
+    """
+    if not HAS_LIBROSA:
+        return stem_wav_path
+
+    try:
+        y, sr = librosa.load(str(stem_wav_path), sr=BD_SAMPLE_RATE, mono=True)
+        if y.size == 0 or np.max(np.abs(y)) < 1e-6:
+            return stem_wav_path
+
+        # 1. HPSS to strip percussive bleed from drums/cymbals
+        y_harm, _ = librosa.effects.hpss(y, margin=(1.0, 2.2))
+
+        # 2. Bandpass filter for piano fundamental range (27.5 Hz - 4400 Hz)
+        y_filtered = y_harm
+        if HAS_SCIPY_SIGNAL and sr > 8800:
+            try:
+                nyq = 0.5 * sr
+                low = 27.5 / nyq
+                high = min(4400.0, nyq - 50.0) / nyq
+                sos = butter(2, [low, high], btype="bandpass", output="sos")
+                y_filtered = sosfiltfilt(sos, y_harm)
+            except Exception as f_err:
+                print(f"[KeyFlow Space] Bandpass filter skipped: {f_err}")
+                y_filtered = y_harm
+
+        # 3. Peak amplitude normalization
+        peak = float(np.max(np.abs(y_filtered)))
+        if peak > 1e-6:
+            y_norm = y_filtered * (0.95 / peak)
+        else:
+            y_norm = y_filtered
+
+        cleaned_path = work_dir / "piano_cleaned.wav"
+        sf.write(str(cleaned_path), y_norm.astype(np.float32), sr)
+        if cleaned_path.exists() and cleaned_path.stat().st_size > 1000:
+            return cleaned_path
+    except Exception as exc:
+        print(f"[KeyFlow Space] Post-Demucs cleaning error: {exc}")
+
+    return stem_wav_path
+
+
 def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Path:
     """
-    Isolates the piano/harmonic stem using HT-Demucs (`htdemucs --two-stems=other`).
-    Uses CUDA when running inside a ZeroGPU context, with fallback to CPU or Librosa HPSS.
+    Isolates dedicated piano stem using 6-stem HT-Demucs (`htdemucs_6s --two-stems=piano`).
+    Falls back to 4-stem `htdemucs --two-stems=other` and Librosa HPSS if unavailable.
+    Cleans output stem with harmonic HPSS and piano-range bandpass filtering.
     """
     if HAS_DEMUCS:
+        device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
+        out_dir = work_dir / "demucs_out"
+
+        # 1. Primary: 6-stem dedicated piano model (htdemucs_6s --two-stems piano)
         try:
-            out_dir = work_dir / "demucs_out"
-            device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
-            cmd = [
+            cmd_6s = [
+                "demucs",
+                "-n", "htdemucs_6s",
+                "--two-stems", "piano",
+                "-d", device,
+                "-o", str(out_dir),
+                str(input_audio_path),
+            ]
+            subprocess.run(
+                cmd_6s,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=300,
+            )
+            piano_wav = out_dir / "htdemucs_6s" / input_audio_path.stem / "piano.wav"
+            if piano_wav.exists():
+                return clean_isolated_piano_audio(piano_wav, work_dir)
+        except Exception as exc:
+            print(f"[KeyFlow Space] htdemucs_6s dedicated piano isolation fallback: {exc}")
+        finally:
+            if HAS_TORCH and torch.cuda.is_available():
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+        # 2. Fallback: 4-stem model (htdemucs --two-stems other)
+        try:
+            cmd_4s = [
                 "demucs",
                 "-n", "htdemucs",
                 "--two-stems", "other",
@@ -118,7 +205,7 @@ def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Path:
                 str(input_audio_path),
             ]
             subprocess.run(
-                cmd,
+                cmd_4s,
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -126,9 +213,9 @@ def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Path:
             )
             other_wav = out_dir / "htdemucs" / input_audio_path.stem / "other.wav"
             if other_wav.exists():
-                return other_wav
+                return clean_isolated_piano_audio(other_wav, work_dir)
         except Exception as exc:
-            print(f"[KeyFlow Space] Demucs stem separation fallback triggered: {exc}")
+            print(f"[KeyFlow Space] Demucs 4-stem fallback failed: {exc}")
         finally:
             if HAS_TORCH and torch.cuda.is_available():
                 try:
@@ -143,7 +230,7 @@ def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Path:
             harm_path = work_dir / "harmonic_isolated.wav"
             sf.write(str(harm_path), y_harm, sr)
             if harm_path.exists():
-                return harm_path
+                return clean_isolated_piano_audio(harm_path, work_dir)
         except Exception as exc:
             print(f"[KeyFlow Space] Librosa HPSS fallback skipped: {exc}")
 
@@ -291,6 +378,63 @@ def transcribe_with_librosa_cqt_to_midi(audio_path: Path, output_midi_path: Path
     return output_midi_path.exists()
 
 
+def filter_midi_bleed_notes(midi_path: Path, sensitivity: float = 55.0) -> bool:
+    """
+    Post-filters low-velocity bleed and micro-glitches from ByteDance transcription:
+    1. Removes notes outside 88-key piano range (MIDI 21..108).
+    2. Velocity gate mapped from sensitivity (15..85 -> min_vel 38..20; default 55 -> 28).
+    3. Removes sub-55ms micro-glitches (duration < 0.055s).
+    4. Caps simultaneous note onsets within any 30ms window to 8 notes (keeping highest velocity).
+    """
+    if not HAS_PRETTY_MIDI or not midi_path.exists():
+        return False
+    try:
+        pm = pretty_midi.PrettyMIDI(str(midi_path))
+        sens_clamped = float(np.clip(sensitivity, 15.0, 85.0))
+        min_vel = int(round(38.0 - ((sens_clamped - 15.0) / 70.0) * 18.0))
+        min_vel = max(15, min(45, min_vel))
+
+        total_kept = 0
+        for inst in pm.instruments:
+            if inst.is_drum:
+                continue
+
+            # Step 1: Filter pitch range, minimum velocity, and minimum duration
+            valid_notes = []
+            for n in inst.notes:
+                dur = n.end - n.start
+                if 21 <= n.pitch <= 108 and n.velocity >= min_vel and dur >= 0.055:
+                    valid_notes.append(n)
+
+            valid_notes.sort(key=lambda n: n.start)
+
+            # Step 2: Cap simultaneous note onsets within 30ms window to 8 notes
+            filtered_notes = []
+            i = 0
+            while i < len(valid_notes):
+                w_start = valid_notes[i].start
+                w_notes = []
+                while i < len(valid_notes) and (valid_notes[i].start - w_start) <= 0.030:
+                    w_notes.append(valid_notes[i])
+                    i += 1
+                if len(w_notes) > 8:
+                    w_notes.sort(key=lambda n: n.velocity, reverse=True)
+                    w_notes = w_notes[:8]
+                filtered_notes.extend(w_notes)
+
+            filtered_notes.sort(key=lambda n: (n.start, n.pitch))
+            inst.notes = filtered_notes
+            total_kept += len(filtered_notes)
+
+        if total_kept > 0:
+            pm.write(str(midi_path))
+            return True
+        return False
+    except Exception as exc:
+        print(f"[KeyFlow Space] Error filtering MIDI bleed notes: {exc}")
+        return False
+
+
 @spaces.GPU(duration=90)
 def run_gpu_transcription_pipeline(
     input_path_str: str,
@@ -300,7 +444,8 @@ def run_gpu_transcription_pipeline(
 ) -> str:
     """
     ZeroGPU-decorated transcription pipeline.
-    Runs HT-Demucs stem isolation and ByteDance Piano Transcription on GPU (with Librosa CQT fallback),
+    Runs HT-Demucs 6S dedicated piano stem isolation and ByteDance Piano Transcription on GPU,
+    followed by harmonic and MIDI bleed filtering (with Librosa CQT fallback),
     returning the base64-encoded Standard MIDI (.mid) file.
     """
     if not input_path_str:
@@ -321,7 +466,9 @@ def run_gpu_transcription_pipeline(
         output_midi = safe_work_dir / "transcribed.mid"
 
         ok = transcribe_with_bytedance(target_audio, output_midi)
-        if not ok:
+        if ok:
+            filter_midi_bleed_notes(output_midi, float(sens_val))
+        else:
             ok = transcribe_with_librosa_cqt_to_midi(target_audio, output_midi, float(sens_val))
 
         if not ok or not output_midi.exists():
@@ -336,7 +483,9 @@ def run_gpu_transcription_pipeline(
         output_midi = work_dir / "transcribed.mid"
 
         ok = transcribe_with_bytedance(target_audio, output_midi)
-        if not ok:
+        if ok:
+            filter_midi_bleed_notes(output_midi, float(sens_val))
+        else:
             ok = transcribe_with_librosa_cqt_to_midi(target_audio, output_midi, float(sens_val))
 
         if not ok or not output_midi.exists():
@@ -348,7 +497,7 @@ def run_gpu_transcription_pipeline(
 async def health_check_handler() -> Dict[str, Any]:
     return {
         "status": "ok",
-        "engines": ["HT-Demucs", "ByteDance Piano AI"],
+        "engines": ["HT-Demucs 6S", "ByteDance Piano AI"],
     }
 
 
@@ -437,10 +586,10 @@ with gr.Blocks(title="KeyFlow AI Audio-to-MIDI Server") as demo:
     gr.Markdown(
         """
         # 🎹 KeyFlow AI Audio-to-MIDI Server (ZeroGPU Online)
-        This Hugging Face Gradio Space powers **Phase 3 AI Audio-to-MIDI Transcription** (`HT-Demucs` + `ByteDance Piano AI`) on **ZeroGPU** for the **KeyFlow Virtual Piano** iPad web app.
+        This Hugging Face Gradio Space powers **Phase 3 AI Audio-to-MIDI Transcription** (`HT-Demucs 6S` + `ByteDance Piano AI`) on **ZeroGPU** for the **KeyFlow Virtual Piano** iPad web app.
 
         ### Active API Endpoints
-        - **`GET /health`** — Returns server health & active engines (`HT-Demucs`, `ByteDance Piano AI`).
+        - **`GET /health`** — Returns server health & active engines (`HT-Demucs 6S`, `ByteDance Piano AI`).
         - **`POST /api/transcribe`** — Accepts `file`, `isolate_piano`, and `sensitivity` (`multipart/form-data`) and returns `{"midi_base64": "...", "title": "..."}`.
 
         **How to connect from KeyFlow:** Copy this Space's public `.hf.space` URL (e.g. `https://<username>-<space-name>.hf.space`) into the **AI Server URL** field inside KeyFlow's **AI Audio** modal and tap **Check**.
@@ -448,7 +597,7 @@ with gr.Blocks(title="KeyFlow AI Audio-to-MIDI Server") as demo:
     )
     with gr.Row():
         audio_in = gr.Audio(type="filepath", label="Audio File (.mp3, .wav, .m4a)")
-        isolate_in = gr.Checkbox(value=True, label="Isolate Piano Stem (HT-Demucs)")
+        isolate_in = gr.Checkbox(value=True, label="Isolate Piano Stem (HT-Demucs 6S)")
         sens_in = gr.Slider(minimum=15, maximum=85, value=55, step=1, label="Sensitivity (%)")
     transcribe_btn = gr.Button("Transcribe Audio to MIDI (Base64)")
     midi_b64_out = gr.Textbox(label="Base64 Standard MIDI Output")

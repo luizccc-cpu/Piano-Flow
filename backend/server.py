@@ -41,6 +41,18 @@ except ImportError:
     HAS_TORCH = False
 
 try:
+    import soundfile as sf
+    HAS_SOUNDFILE = True
+except ImportError:
+    HAS_SOUNDFILE = False
+
+try:
+    from scipy.signal import butter, sosfiltfilt
+    HAS_SCIPY_SIGNAL = True
+except ImportError:
+    HAS_SCIPY_SIGNAL = False
+
+try:
     import librosa
     HAS_LIBROSA = True
 except ImportError:
@@ -114,7 +126,7 @@ app.add_middleware(
 def get_available_engines() -> List[str]:
     engines = []
     if HAS_DEMUCS:
-        engines.append("HT-Demucs")
+        engines.append("HT-Demucs-6S")
     if HAS_BYTEDANCE:
         engines.append("ByteDance-Piano")
     if HAS_BASIC_PITCH:
@@ -137,18 +149,94 @@ async def health_check() -> Dict[str, Any]:
     }
 
 
+def clean_isolated_piano_audio(stem_wav_path: Path, work_dir: Path) -> Path:
+    """
+    Applies post-Demucs harmonic and piano-range filtering:
+    1. Loads audio at ByteDance sample rate (16 kHz mono).
+    2. Strips residual drum/percussive transients via HPSS (margin 1.0 harm vs 2.2 perc).
+    3. Bandpasses to piano fundamental range (27.5 Hz A0 to 4400 Hz C8).
+    4. Normalizes peak amplitude and saves to piano_cleaned.wav.
+    """
+    if not HAS_LIBROSA:
+        return stem_wav_path
+
+    try:
+        y, sr = librosa.load(str(stem_wav_path), sr=BD_SAMPLE_RATE, mono=True)
+        if y.size == 0 or np.max(np.abs(y)) < 1e-6:
+            return stem_wav_path
+
+        # 1. HPSS to strip percussive bleed from drums/cymbals
+        y_harm, _ = librosa.effects.hpss(y, margin=(1.0, 2.2))
+
+        # 2. Bandpass filter for piano fundamental range (27.5 Hz - 4400 Hz)
+        y_filtered = y_harm
+        if HAS_SCIPY_SIGNAL and sr > 8800:
+            try:
+                nyq = 0.5 * sr
+                low = 27.5 / nyq
+                high = min(4400.0, nyq - 50.0) / nyq
+                sos = butter(2, [low, high], btype="bandpass", output="sos")
+                y_filtered = sosfiltfilt(sos, y_harm)
+            except Exception as f_err:
+                print(f"[KeyFlow Backend] Bandpass filter skipped: {f_err}")
+                y_filtered = y_harm
+
+        # 3. Peak amplitude normalization
+        peak = float(np.max(np.abs(y_filtered)))
+        if peak > 1e-6:
+            y_norm = y_filtered * (0.95 / peak)
+        else:
+            y_norm = y_filtered
+
+        cleaned_path = work_dir / "piano_cleaned.wav"
+        if HAS_SOUNDFILE:
+            sf.write(str(cleaned_path), y_norm.astype(np.float32), sr)
+            if cleaned_path.exists() and cleaned_path.stat().st_size > 1000:
+                return cleaned_path
+    except Exception as exc:
+        print(f"[KeyFlow Backend] Post-Demucs cleaning error: {exc}")
+
+    return stem_wav_path
+
+
 def isolate_piano_with_demucs(input_audio_path: Path, work_dir: Path) -> Path:
     """
-    Runs HT-Demucs to strip drums, bass, and vocals when `demucs` is installed.
-    Falls back to the original audio file if Demucs is unavailable or fails.
+    Isolates dedicated piano stem using 6-stem HT-Demucs (`htdemucs_6s --two-stems=piano`).
+    Falls back to 4-stem `htdemucs --two-stems=other` and Librosa HPSS if unavailable.
+    Cleans output stem with harmonic HPSS and piano-range bandpass filtering.
     """
     if not HAS_DEMUCS:
         return input_audio_path
 
+    out_dir = work_dir / "demucs_out"
+    device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
+
+    # 1. Primary: 6-stem dedicated piano model (htdemucs_6s --two-stems piano)
     try:
-        out_dir = work_dir / "demucs_out"
-        device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
-        cmd = [
+        cmd_6s = [
+            "demucs",
+            "-n", "htdemucs_6s",
+            "--two-stems", "piano",
+            "-d", device,
+            "-o", str(out_dir),
+            str(input_audio_path),
+        ]
+        subprocess.run(cmd_6s, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+        piano_wav = out_dir / "htdemucs_6s" / input_audio_path.stem / "piano.wav"
+        if piano_wav.exists():
+            return clean_isolated_piano_audio(piano_wav, work_dir)
+    except Exception as exc:
+        print(f"[KeyFlow Backend] htdemucs_6s dedicated piano isolation fallback: {exc}")
+    finally:
+        if HAS_TORCH and torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+    # 2. Fallback: 4-stem model (htdemucs --two-stems other)
+    try:
+        cmd_4s = [
             "demucs",
             "-n", "htdemucs",
             "--two-stems", "other",
@@ -156,13 +244,12 @@ def isolate_piano_with_demucs(input_audio_path: Path, work_dir: Path) -> Path:
             "-o", str(out_dir),
             str(input_audio_path),
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
-        stem_dir = out_dir / "htdemucs" / input_audio_path.stem
-        other_wav = stem_dir / "other.wav"
+        subprocess.run(cmd_4s, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=240)
+        other_wav = out_dir / "htdemucs" / input_audio_path.stem / "other.wav"
         if other_wav.exists():
-            return other_wav
+            return clean_isolated_piano_audio(other_wav, work_dir)
     except Exception as exc:
-        print(f"[KeyFlow Backend] Demucs stem separation skipped: {exc}")
+        print(f"[KeyFlow Backend] Demucs 4-stem fallback failed: {exc}")
     finally:
         if HAS_TORCH and torch.cuda.is_available():
             try:
@@ -213,6 +300,63 @@ def transcribe_with_basic_pitch(audio_path: Path, output_midi_path: Path, sensit
         return output_midi_path.exists()
     except Exception as exc:
         print(f"[KeyFlow Backend] Basic Pitch transcription failed: {exc}")
+        return False
+
+
+def filter_midi_bleed_notes(midi_path: Path, sensitivity: float = 55.0) -> bool:
+    """
+    Post-filters low-velocity bleed and micro-glitches from ByteDance transcription:
+    1. Removes notes outside 88-key piano range (MIDI 21..108).
+    2. Velocity gate mapped from sensitivity (15..85 -> min_vel 38..20; default 55 -> 28).
+    3. Removes sub-55ms micro-glitches (duration < 0.055s).
+    4. Caps simultaneous note onsets within any 30ms window to 8 notes (keeping highest velocity).
+    """
+    if not HAS_PRETTY_MIDI or not midi_path.exists():
+        return False
+    try:
+        pm = pretty_midi.PrettyMIDI(str(midi_path))
+        sens_clamped = float(np.clip(sensitivity, 15.0, 85.0))
+        min_vel = int(round(38.0 - ((sens_clamped - 15.0) / 70.0) * 18.0))
+        min_vel = max(15, min(45, min_vel))
+
+        total_kept = 0
+        for inst in pm.instruments:
+            if inst.is_drum:
+                continue
+
+            # Step 1: Filter pitch range, minimum velocity, and minimum duration
+            valid_notes = []
+            for n in inst.notes:
+                dur = n.end - n.start
+                if 21 <= n.pitch <= 108 and n.velocity >= min_vel and dur >= 0.055:
+                    valid_notes.append(n)
+
+            valid_notes.sort(key=lambda n: n.start)
+
+            # Step 2: Cap simultaneous note onsets within 30ms window to 8 notes
+            filtered_notes = []
+            i = 0
+            while i < len(valid_notes):
+                w_start = valid_notes[i].start
+                w_notes = []
+                while i < len(valid_notes) and (valid_notes[i].start - w_start) <= 0.030:
+                    w_notes.append(valid_notes[i])
+                    i += 1
+                if len(w_notes) > 8:
+                    w_notes.sort(key=lambda n: n.velocity, reverse=True)
+                    w_notes = w_notes[:8]
+                filtered_notes.extend(w_notes)
+
+            filtered_notes.sort(key=lambda n: (n.start, n.pitch))
+            inst.notes = filtered_notes
+            total_kept += len(filtered_notes)
+
+        if total_kept > 0:
+            pm.write(str(midi_path))
+            return True
+        return False
+    except Exception as exc:
+        print(f"[KeyFlow Filter] Error filtering MIDI bleed notes: {exc}")
         return False
 
 
@@ -375,10 +519,12 @@ async def transcribe_endpoint(
 
             # 1. Try ByteDance High-Resolution Piano Transcription first
             if transcribe_with_bytedance(target_audio, output_midi):
+                filter_midi_bleed_notes(output_midi, sens_val)
                 return "midi", output_midi.read_bytes(), None
 
             # 2. Try Spotify Basic Pitch second
             if transcribe_with_basic_pitch(target_audio, output_midi, sens_norm):
+                filter_midi_bleed_notes(output_midi, sens_val)
                 return "midi", output_midi.read_bytes(), None
 
             # 3. Fallback to Librosa CQT Polyphonic Piano Transcriber
