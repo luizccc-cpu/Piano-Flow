@@ -84,9 +84,13 @@ Hugging Face provides free ZeroGPU hardware (NVIDIA RTX Pro 6000 Blackwell) usin
 
 ## API Endpoints
 
-- **`GET /health`** — Returns server status, version, and available AI engines (`HT-Demucs-6S`, `ByteDance-Piano`, `Basic-Pitch`, `Librosa-CQT`).
+- **`GET /health`** / **`GET /api/health`** — Returns server status, version, and available AI engines (`HT-Demucs-6S`, `ByteDance-Piano`, `Basic-Pitch`, `Librosa-CQT`, `Sheet-OMR`).
 - **`POST /api/transcribe`** — Accepts `multipart/form-data`:
   - `file`: Audio file (`.mp3`, `.wav`, `.m4a`, `.aac`, `.ogg`, `.flac`, `.webm`, max 50 MB).
   - `isolate_piano`: `"true"` (default) to run HT-Demucs 6S dedicated piano isolation or `"false"`.
   - `sensitivity`: integer/float `15..85` (default `55`), normalized to `0.15..0.90`.
   - Returns `audio/midi` (Standard MIDI binary) or JSON note stream (`{"title": "...", "bpm": 110, "notes": [...]}` or `{"midi_base64": "...", "title": "..."}`).
+- **`POST /api/omr`** — Accepts `multipart/form-data`:
+  - `file`: Sheet music file (`.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.musicxml`, `.mxl`, max 50 MB).
+  - Digital `.musicxml` / `.mxl` files are unpacked and returned as clean score XML (`{"musicxml": "...", "title": "..."}`).
+  - Visual `.pdf`, `.png`, and `.jpg` scores are rendered via `pypdfium2` and transcribed into Left/Right hand falling piano notes via morphological computer vision, returning `{ "midi_base64": "...", "title": "..." }`.

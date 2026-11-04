@@ -13,3 +13,6 @@ resampy
 pretty_midi
 demucs
 piano_transcription_inference
+pypdfium2
+Pillow
+music21

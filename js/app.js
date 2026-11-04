@@ -2592,6 +2592,7 @@
   function getSongSourceCategory(songObj) {
     if (!songObj) return 'builtin';
     const src = String(songObj.source || '').toLowerCase();
+    if (src.indexOf('sheet') !== -1 || src.indexOf('musicxml') !== -1 || src.indexOf('mxl') !== -1 || src.indexOf('omr') !== -1) return 'sheet';
     if (src.indexOf('ai') !== -1) return 'ai';
     if (src.indexOf('midi') !== -1) return 'midi';
     if (songObj.isCustom) return 'midi';
@@ -2637,7 +2638,7 @@
     if (matchedSongs.length === 0) {
       const emptyEl = document.createElement('div');
       emptyEl.className = 'song-grid-empty';
-      emptyEl.textContent = 'No songs match this filter. Upload a .MID file or convert an audio song with AI Audio!';
+      emptyEl.textContent = 'No songs match this filter. Import a sheet music score, upload a .MID file, or convert an audio song with AI Audio!';
       homeSongGrid.appendChild(emptyEl);
       return;
     }
@@ -2694,7 +2695,10 @@
       badgesRow.className = 'song-card-badges';
 
       const srcBadge = document.createElement('span');
-      if (cat === 'ai') {
+      if (cat === 'sheet') {
+        srcBadge.className = 'song-badge sheet';
+        srcBadge.textContent = 'Sheet Music';
+      } else if (cat === 'ai') {
         srcBadge.className = 'song-badge ai';
         srcBadge.textContent = 'AI Audio';
       } else if (cat === 'midi') {
@@ -3767,6 +3771,248 @@
         if (transcribeErrorBox) {
           transcribeErrorBox.style.display = 'block';
           transcribeErrorBox.textContent = (err && err.message) ? err.message : 'Could not transcribe audio file.';
+        }
+      }
+    });
+  }
+
+  /********************************************************************
+   * PHASE 5: SHEET MUSIC IMPORTER MODAL (.MUSICXML, .MXL, .PDF, .PNG, .JPG)
+   ********************************************************************/
+  const sheetModal = document.getElementById('sheetModal');
+  const homeOpenSheetModalBtn = document.getElementById('homeOpenSheetModalBtn');
+  const closeSheetModalBtn = document.getElementById('closeSheetModalBtn');
+  const cancelSheetBtn = document.getElementById('cancelSheetBtn');
+  const sheetDropZone = document.getElementById('sheetDropZone');
+  const sheetFileInput = document.getElementById('sheetFileInput');
+  const selectedSheetFileName = document.getElementById('selectedSheetFileName');
+  const selectedSheetFileMeta = document.getElementById('selectedSheetFileMeta');
+  const sheetServerUrlInput = document.getElementById('sheetServerUrlInput');
+  const testSheetServerBtn = document.getElementById('testSheetServerBtn');
+  const sheetServerStatusPill = document.getElementById('sheetServerStatusPill');
+  const sheetProgressWrap = document.getElementById('sheetProgressWrap');
+  const sheetStatusText = document.getElementById('sheetStatusText');
+  const sheetPercentText = document.getElementById('sheetPercentText');
+  const sheetProgressFill = document.getElementById('sheetProgressFill');
+  const sheetErrorBox = document.getElementById('sheetErrorBox');
+  const startSheetImportBtn = document.getElementById('startSheetImportBtn');
+
+  let selectedSheetFile = null;
+  let isImportingSheet = false;
+
+  try {
+    const savedOmrUrl = localStorage.getItem('keyflow_omr_server_url') || localStorage.getItem('keyflow_ai_server_url');
+    if (savedOmrUrl && sheetServerUrlInput) {
+      sheetServerUrlInput.value = savedOmrUrl;
+    }
+  } catch (e) {}
+
+  function setSheetModalOpen(open) {
+    if (!sheetModal) return;
+    sheetModal.classList.toggle('open', !!open);
+    sheetModal.setAttribute('aria-hidden', open ? 'false' : 'true');
+    if (open) {
+      setPlaying(false);
+      if (sheetFileInput) sheetFileInput.value = '';
+      refreshSheetServerStatus();
+    }
+  }
+
+  function updateSelectedSheetFile(file) {
+    selectedSheetFile = file || null;
+    if (sheetErrorBox) {
+      sheetErrorBox.style.display = 'none';
+      sheetErrorBox.textContent = '';
+    }
+    if (selectedSheetFile) {
+      if (sheetDropZone) sheetDropZone.classList.add('has-file');
+      const sizeMb = (selectedSheetFile.size / (1024 * 1024)).toFixed(1);
+      const name = selectedSheetFile.name.toLowerCase();
+      const isDigital = name.endsWith('.musicxml') || name.endsWith('.xml') || name.endsWith('.mxl');
+
+      if (selectedSheetFileName) {
+        selectedSheetFileName.style.display = 'block';
+        selectedSheetFileName.textContent = 'Selected: ' + selectedSheetFile.name + ' (' + sizeMb + ' MB)';
+      }
+      if (selectedSheetFileMeta) {
+        selectedSheetFileMeta.style.display = 'block';
+        selectedSheetFileMeta.textContent = isDigital
+          ? 'Digital score: Parses instantly offline in your browser'
+          : 'Visual score scan: Converts via Python CV / AI OMR Server';
+      }
+      if (startSheetImportBtn && !isImportingSheet) {
+        startSheetImportBtn.disabled = false;
+      }
+    } else {
+      if (sheetDropZone) sheetDropZone.classList.remove('has-file');
+      if (selectedSheetFileName) {
+        selectedSheetFileName.style.display = 'none';
+        selectedSheetFileName.textContent = '';
+      }
+      if (selectedSheetFileMeta) {
+        selectedSheetFileMeta.style.display = 'none';
+        selectedSheetFileMeta.textContent = '';
+      }
+      if (startSheetImportBtn) {
+        startSheetImportBtn.disabled = true;
+      }
+    }
+  }
+
+  async function refreshSheetServerStatus() {
+    if (!sheetServerUrlInput || !sheetServerStatusPill) return;
+    const url = sheetServerUrlInput.value.trim();
+    try {
+      localStorage.setItem('keyflow_omr_server_url', url);
+    } catch (e) {}
+
+    sheetServerStatusPill.className = 'server-status-pill';
+    sheetServerStatusPill.textContent = 'Checking...';
+
+    let isOk = false;
+    try {
+      const ctrl = new AbortController();
+      const tId = setTimeout(function () { ctrl.abort(); }, 1600);
+      const res = await fetch(url.replace(/\/+$/, '') + '/api/health', { method: 'GET', signal: ctrl.signal });
+      clearTimeout(tId);
+      if (res.ok) {
+        isOk = true;
+      }
+    } catch (e) {
+      try {
+        const ctrl2 = new AbortController();
+        const tId2 = setTimeout(function () { ctrl2.abort(); }, 1200);
+        const res2 = await fetch(url.replace(/\/+$/, '') + '/health', { method: 'GET', signal: ctrl2.signal });
+        clearTimeout(tId2);
+        if (res2.ok) {
+          isOk = true;
+        }
+      } catch (e2) {}
+    }
+
+    if (isOk) {
+      sheetServerStatusPill.className = 'server-status-pill online';
+      sheetServerStatusPill.textContent = 'Online (OMR + MusicXML)';
+    } else {
+      sheetServerStatusPill.className = 'server-status-pill offline';
+      sheetServerStatusPill.textContent = 'Offline (Digital Scores Ready)';
+    }
+  }
+
+  if (homeOpenSheetModalBtn) {
+    homeOpenSheetModalBtn.addEventListener('click', function () {
+      setSheetModalOpen(true);
+    });
+  }
+
+  if (closeSheetModalBtn) {
+    closeSheetModalBtn.addEventListener('click', function () {
+      if (!isImportingSheet) setSheetModalOpen(false);
+    });
+  }
+
+  if (cancelSheetBtn) {
+    cancelSheetBtn.addEventListener('click', function () {
+      if (!isImportingSheet) setSheetModalOpen(false);
+    });
+  }
+
+  if (sheetModal) {
+    sheetModal.addEventListener('click', function (e) {
+      if (e.target === sheetModal && !isImportingSheet) {
+        setSheetModalOpen(false);
+      }
+    });
+  }
+
+  if (sheetFileInput) {
+    sheetFileInput.addEventListener('change', function (e) {
+      const f = e.target.files && e.target.files[0];
+      if (f) updateSelectedSheetFile(f);
+    });
+  }
+
+  if (sheetDropZone) {
+    sheetDropZone.addEventListener('click', function (e) {
+      if (isImportingSheet) {
+        e.preventDefault();
+        return;
+      }
+      if (sheetFileInput && e.target !== sheetFileInput) {
+        sheetFileInput.click();
+      }
+    });
+    sheetDropZone.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      sheetDropZone.classList.add('dragover');
+    });
+    sheetDropZone.addEventListener('dragleave', function (e) {
+      e.preventDefault();
+      sheetDropZone.classList.remove('dragover');
+    });
+    sheetDropZone.addEventListener('drop', function (e) {
+      e.preventDefault();
+      sheetDropZone.classList.remove('dragover');
+      if (isImportingSheet) return;
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) updateSelectedSheetFile(f);
+    });
+  }
+
+  if (testSheetServerBtn) {
+    testSheetServerBtn.addEventListener('click', function () {
+      refreshSheetServerStatus();
+    });
+  }
+
+  if (startSheetImportBtn) {
+    startSheetImportBtn.addEventListener('click', async function () {
+      if (!selectedSheetFile || isImportingSheet || !window.sheetMusicImporter) return;
+      isImportingSheet = true;
+      startSheetImportBtn.disabled = true;
+      if (sheetErrorBox) sheetErrorBox.style.display = 'none';
+      if (sheetProgressWrap) sheetProgressWrap.style.display = 'flex';
+
+      const serverUrl = sheetServerUrlInput ? sheetServerUrlInput.value.trim() : 'http://localhost:8000';
+
+      try {
+        const songObj = await window.sheetMusicImporter.importSheetMusicFile(
+          selectedSheetFile,
+          { serverUrl: serverUrl },
+          function (prog) {
+            if (sheetStatusText && prog.stage) sheetStatusText.textContent = prog.stage;
+            if (typeof prog.percent === 'number') {
+              const p = Math.max(0, Math.min(100, Math.round(prog.percent)));
+              if (sheetPercentText) sheetPercentText.textContent = p + '%';
+              if (sheetProgressFill) sheetProgressFill.style.width = p + '%';
+            }
+          }
+        );
+
+        const id = 'sheet_' + Date.now();
+        songObj.id = id;
+        songObj.isCustom = true;
+        songObj.source = 'sheet';
+        songObj.createdAt = Date.now();
+        SONGS[id] = songObj;
+
+        if (audioTranscriber && audioTranscriber.customSongStore) {
+          await audioTranscriber.customSongStore.saveSong(songObj);
+        }
+
+        isImportingSheet = false;
+        if (sheetProgressWrap) sheetProgressWrap.style.display = 'none';
+        startSheetImportBtn.disabled = false;
+        setSheetModalOpen(false);
+        renderHomeSongGrid();
+        loadSongById(id);
+        setViewMode('play');
+      } catch (err) {
+        isImportingSheet = false;
+        startSheetImportBtn.disabled = false;
+        if (sheetErrorBox) {
+          sheetErrorBox.style.display = 'block';
+          sheetErrorBox.textContent = (err && err.message) ? err.message : 'Could not import sheet music score.';
         }
       }
     });

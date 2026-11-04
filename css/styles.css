@@ -138,6 +138,18 @@ html, body {
   color: #ffffff;
 }
 
+.ui-btn-amber {
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fde68a;
+}
+
+.ui-btn-amber:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.28);
+  border-color: rgba(251, 191, 36, 0.65);
+  color: #ffffff;
+}
+
 .ui-btn-danger {
   background: rgba(239, 68, 68, 0.14);
   border-color: rgba(239, 68, 68, 0.42);
@@ -1646,6 +1658,12 @@ html, body {
   background: rgba(148, 163, 184, 0.16);
   color: #cbd5e1;
   border: 1px solid rgba(148, 163, 184, 0.32);
+}
+
+.song-badge.sheet {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.4);
 }
 
 .song-badge.ai {

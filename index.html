@@ -32,6 +32,7 @@
 
           <div class="home-filter-group" role="tablist" aria-label="Filter songs by source">
             <button type="button" class="home-filter-btn active" data-filter="all">All Songs</button>
+            <button type="button" class="home-filter-btn" data-filter="sheet">Sheet Music</button>
             <button type="button" class="home-filter-btn" data-filter="ai">AI Audio</button>
             <button type="button" class="home-filter-btn" data-filter="midi">MIDI Uploads</button>
             <button type="button" class="home-filter-btn" data-filter="builtin">Built-In Classics</button>
@@ -47,6 +48,9 @@
           </div>
 
           <div class="home-actions-group">
+            <button id="homeOpenSheetModalBtn" type="button" class="ui-btn ui-btn-amber" title="Import Sheet Music (.MusicXML, .MXL, .PDF, .PNG, .JPG)">
+              <span>+ Sheet Music</span>
+            </button>
             <label for="midiInput" id="homeOpenMidiBtn" class="ui-btn ui-btn-accent" title="Upload a Standard .MID or .MIDI file">
               <span>+ Open .MID File</span>
             </label>
@@ -506,6 +510,72 @@
         </div>
       </div>
     </div>
+
+    <!-- ==================== PHASE 5: SHEET MUSIC IMPORTER MODAL ==================== -->
+    <div id="sheetModal" class="modal-backdrop" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="sheetModalTitle">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span class="modal-icon" style="background: rgba(245, 158, 11, 0.16); color:#f59e0b; border: 1px solid rgba(245, 158, 11, 0.35);">🎼</span>
+            <h2 id="sheetModalTitle" class="modal-title">Sheet Music &rarr; Falling Piano Notes</h2>
+          </div>
+          <button id="closeSheetModalBtn" type="button" class="ui-btn icon-btn" title="Close" aria-label="Close dialog">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="modal-info-banner">
+            <span>Import digital sheet music (<code>.musicxml</code>, <code>.mxl</code>) instantly offline in your browser, or optical scans (<code>.pdf</code>, <code>.png</code>, <code>.jpg</code>) via the Python OMR AI server.</span>
+          </div>
+
+          <!-- Drag and Drop Zone -->
+          <div id="sheetDropZone" class="transcribe-dropzone" tabindex="0" role="button" aria-label="Choose or drop a sheet music file">
+            <input id="sheetFileInput" type="file" accept=".musicxml,.mxl,.xml,.pdf,.png,.jpg,.jpeg,.webp" style="display:none;" />
+            <div class="dropzone-inner">
+              <span class="dropzone-icon">📄</span>
+              <p class="dropzone-prompt"><strong>Choose a score or scan</strong> or drag &amp; drop it here</p>
+              <p class="dropzone-subtext">Supports digital <code>.musicxml</code>, <code>.mxl</code> and visual <code>.pdf</code>, <code>.png</code>, <code>.jpg</code>, <code>.webp</code></p>
+            </div>
+            <div id="selectedSheetFileName" class="selected-file-name" style="display:none;"></div>
+            <div id="selectedSheetFileMeta" class="selected-file-meta" style="display:none;"></div>
+          </div>
+
+          <!-- Sheet Music OMR Backend Config Box -->
+          <div id="sheetServerConfigBox" class="server-config-box">
+            <div class="server-config-row">
+              <div style="display:flex; align-items:center; gap:8px; flex:1;">
+                <span class="modal-label" style="white-space:nowrap;">OMR Server URL:</span>
+                <input id="sheetServerUrlInput" type="text" class="modal-text-input" value="http://localhost:8000" placeholder="http://192.168.1.x:8000" />
+                <button id="testSheetServerBtn" type="button" class="ui-btn" style="padding:4px 9px; font-size:11.5px;">Check</button>
+              </div>
+              <span id="sheetServerStatusPill" class="server-status-pill">Offline Digital Ready</span>
+            </div>
+            <div style="font-size:11.5px; color:#94a3b8; margin-top:2px;">
+              Digital <code>.musicxml</code> and <code>.mxl</code> files are parsed instantly offline in your browser. Visual scans (<code>.pdf</code>, <code>.png</code>, <code>.jpg</code>) connect to this server for CV/AI recognition.
+            </div>
+          </div>
+
+          <!-- Progress & Error Feedback -->
+          <div id="sheetProgressWrap" class="transcribe-progress-wrap" style="display:none;">
+            <div class="transcribe-progress-header">
+              <span id="sheetStatusText">Reading score...</span>
+              <strong id="sheetPercentText">0%</strong>
+            </div>
+            <div class="transcribe-progress-rail">
+              <div id="sheetProgressFill" class="transcribe-progress-fill"></div>
+            </div>
+          </div>
+
+          <div id="sheetErrorBox" class="transcribe-error-box" style="display:none;"></div>
+        </div>
+
+        <div class="modal-footer">
+          <button id="cancelSheetBtn" type="button" class="ui-btn">Cancel</button>
+          <button id="startSheetImportBtn" type="button" class="ui-btn ui-btn-amber" disabled>
+            <span>Import Sheet Music</span>
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Modular Application Scripts (Zero Build Step Required) -->
@@ -513,6 +583,7 @@
   <script src="js/midi-parser.js"></script>
   <script src="js/audio-transcriber.js"></script>
   <script src="js/audio.js"></script>
+  <script src="js/sheet-music-importer.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

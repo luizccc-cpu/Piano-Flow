@@ -45,6 +45,11 @@ Built for a landscape tablet resting on your piano's music stand, KeyFlow pairs 
   * **Optional Python FastAPI / Hugging Face ZeroGPU Backend (`backend/`):** Connect to a Hugging Face ZeroGPU Gradio Space or `localhost:8000` for `HT-Demucs` piano stem separation and neural polyphonic transcription (`ByteDance Piano Transcription` / `Basic Pitch` / `Librosa CQT`).
 * **Persistent Custom Song Library & `.MID` Exporter:** Uploaded `.MID` files, AI-transcribed songs, and visual note edits are automatically saved in `IndexedDB` across sessions on your iPad, and any song can be exported as a two-track Standard `.MID` file.
 
+### 🎼 Hybrid Sheet Music Import (Phase 5)
+* **Instant Offline Digital Scores (`.musicxml` & `.mxl`):** Load interactive digital sheet music directly in your browser with zero latency. Features a native in-browser ZIP unpacker (`extractMusicXmlFromMxl`) and comprehensive MusicXML DOM parser supporting Grand Staff piano scores (Staff 1 Treble &rarr; Right Hand, Staff 2 Bass &rarr; Left Hand), running voice timelines with `<backup>` and `<forward>`, chord clusters, tie merging, measure divisions, tempo/time signatures, and embedded finger numbers.
+* **AI Optical Music Recognition (OMR) for Visual Scores (`.pdf`, `.png`, `.jpg`):** Upload sheet music scans or multi-page PDF documents. Automatically renders pages via `pypdfium2`, detects 5-line staff systems and noteheads via morphological computer vision on the Python backend (`POST /api/omr`), and generates playable falling piano notes.
+* **Dedicated Amber Filter & Library Badge:** Filter songs by `Sheet Music` on the Home Screen, open the importer with **+ Sheet Music**, and easily identify sheet music songs with the amber badge.
+
 ### 🎓 Advanced Learning Aids & Cable-Free Practice (Phase 4B)
 * **Real-Time Microphone Listen Mode (`🎤 Mic`):** Practice cable-free on any acoustic or speaker digital piano (such as a Casio CT-S200) on iPad without needing USB cables or WebMIDI. Features high-resolution Web Audio pitch detection with harmonic overtone rejection and auto-muting synth to prevent acoustic feedback loops.
 * **Live Chord Symbol Detector Badge:** Displays active chords in real time (`C`, `G/B`, `Am7`, `Fmaj7`, `Ddim`) above the runway using polyphonic pitch-class analysis with slash-bass recognition. Toggleable via Settings Popover.
@@ -72,6 +77,7 @@ KeyFlow ships with 5 built-in arrangements ready for immediate practice and visu
 * **Phase 3 (Complete):** Hybrid AI Audio-to-MIDI Transcription Pipeline (Hugging Face ZeroGPU / FastAPI backend + In-browser Web Audio polyphonic transcriber), persistent IndexedDB library, and standard `.MID` exporter.
 * **Phase 4A (Complete):** Home Screen Song Library view, decluttered practice top bar, interactive Visual Note Editor on runway with 30-level Undo/Redo and group merge.
 * **Phase 4B (Complete):** Real-Time Microphone Listen Mode (`🎤 Mic`), Live Chord Symbol Detector (`C`, `G/B`, `Am7`, `Fmaj7`), Audible Metronome & 1-Bar Count-In (`1-2-3-4`), Live Hit Accuracy % & Wrong-Note Red Flash, Editable Finger Number Badges (`1–5`), and Full Library `.keyflow.json` Backup & Restore.
+* **Phase 5 (Complete):** Hybrid Sheet Music Importer with native digital `.musicxml` / `.mxl` in-browser decompression and parsing, backend Optical Music Recognition (`POST /api/omr`) for `.pdf`, `.png`, and `.jpg` scores, and amber Home Screen filter & badge.
 
 ---
 
@@ -81,7 +87,7 @@ KeyFlow uses a clean, modular vanilla JavaScript architecture with **zero extern
 
 ```text
 Piano-Flow/
-├── index.html               # Home library view, clean top bar, editor toolbar & AI Audio modal
+├── index.html               # Home library view, clean top bar, editor toolbar & modals
 ├── manifest.json            # PWA Web App Manifest for fullscreen iPad landscape mode
 ├── css/
 │   └── styles.css           # Dark glassmorphic UI styling, Home grid & Editor toolbar rules
@@ -89,10 +95,11 @@ Piano-Flow/
 │   ├── songs.js             # Pitch/frequency helpers & 5 built-in song arrangements
 │   ├── midi-parser.js       # Native binary .MID file parser, smart hand splitter & auto-scaler
 │   ├── audio-transcriber.js # Hybrid AI + Web Audio polyphonic transcriber, IndexedDB & .MID exporter
+│   ├── sheet-music-importer.js # Native MusicXML/.MXL parser, grand-staff allocator & OMR client
 │   ├── audio.js             # Web Audio Acoustic Grand (default) & Mellow Felt sound engine
 │   └── app.js               # 60 FPS visualizer, Home library, Visual Note Editor & WebMIDI controller
 ├── backend/
-│   ├── app.py               # Hugging Face ZeroGPU Gradio Space + FastAPI (/health, /api/transcribe)
+│   ├── app.py               # Hugging Face ZeroGPU Gradio Space + FastAPI (/health, /api/transcribe, /api/omr)
 │   ├── server.py            # Standalone local FastAPI server
 │   ├── packages.txt         # Debian system packages (ffmpeg, libsndfile1) for HF Spaces
 │   ├── requirements.txt     # Python backend dependencies

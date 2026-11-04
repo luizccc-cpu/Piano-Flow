@@ -30,3 +30,7 @@ description: "Core architecture, UX constraints, and phased roadmap for the Fall
   - Live MIDI & Keyboard Hit Accuracy %, Consecutive Streak Counter, and Wrong-Note Red Flash on keys and strike line.
   - Editable Finger Number Badges (`1–5`) on falling notes in Edit Mode (with keyboard shortcuts `0`–`5`, inspector selector, and persistence to `IndexedDB`).
   - Full Song Library Backup & Restore (`.keyflow.json`) from the Home Screen.
+- **Phase 5 (Complete):**
+  - Hybrid Sheet Music Importer supporting instant offline digital `.musicxml` and `.mxl` (ZIP) scores in the browser via `js/sheet-music-importer.js` (with Grand Staff voice separation, `<backup>`/`<forward>` timeline tracking, chord clusters, tie merging, and embedded finger numbers).
+  - Remote Optical Music Recognition (`POST /api/omr`) on the Python backend (`backend/app.py`, `backend/server.py`) for visual `.pdf`, `.png`, and `.jpg` scores using `pypdfium2` page rendering and morphological CV grand-staff detection.
+  - Dedicated Home Screen Sheet Music filter (`data-filter="sheet"`), amber modal trigger (`#homeOpenSheetModalBtn`), modal importer (`#sheetModal`), and amber card badge (`.song-badge.sheet`).

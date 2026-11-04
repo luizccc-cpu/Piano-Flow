@@ -24,17 +24,21 @@ except ImportError:
     spaces = _SpacesFallback()
 
 import base64
+import io
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 import threading
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import List, Dict, Any
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB limit
 ALLOWED_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".webm", ".mp4"}
+ALLOWED_OMR_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".musicxml", ".mxl", ".xml"}
 
 import numpy as np
 import soundfile as sf
@@ -42,6 +46,30 @@ from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 import gradio as gr
+
+try:
+    from PIL import Image
+    HAS_PIL = True
+except Exception:
+    HAS_PIL = False
+
+try:
+    import scipy.ndimage as ndi
+    HAS_NDI = True
+except Exception:
+    HAS_NDI = False
+
+try:
+    import pypdfium2 as pdfium
+    HAS_PDFIUM = True
+except Exception:
+    HAS_PDFIUM = False
+
+try:
+    import music21
+    HAS_MUSIC21 = True
+except Exception:
+    HAS_MUSIC21 = False
 
 try:
     import librosa
@@ -497,7 +525,7 @@ def run_gpu_transcription_pipeline(
 async def health_check_handler() -> Dict[str, Any]:
     return {
         "status": "ok",
-        "engines": ["HT-Demucs 6S", "ByteDance Piano AI"],
+        "engines": ["HT-Demucs 6S", "ByteDance Piano AI", "Sheet-OMR"],
     }
 
 
@@ -551,8 +579,327 @@ async def transcribe_endpoint_handler(
     }
 
 
+def render_pdf_to_images(pdf_path: Path, work_dir: Path, max_pages: int = 8) -> List[Path]:
+    """Renders PDF pages to 200 DPI PNG images using pypdfium2."""
+    if not HAS_PDFIUM:
+        raise RuntimeError("pypdfium2 is required for PDF sheet music rendering.")
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    page_paths = []
+    num_pages = min(len(pdf), max_pages)
+    for i in range(num_pages):
+        page = pdf[i]
+        image = page.render(scale=2.0).to_pil()
+        out_path = work_dir / f"page_{i + 1}.png"
+        image.save(str(out_path))
+        page_paths.append(out_path)
+    return page_paths
+
+
+DIATONIC_PATTERN = [0, 2, 4, 5, 7, 9, 11]  # C, D, E, F, G, A, B
+
+
+def diatonic_step_to_midi(base_step_in_c: int, base_octave: int, step_offset: int) -> int:
+    """Maps diatonic line/space offsets on standard staves to MIDI pitch numbers."""
+    target_step = base_step_in_c + step_offset
+    octave_shift = target_step // 7
+    note_in_oct = target_step % 7
+    midi = (base_octave * 12) + 12 + (octave_shift * 12) + DIATONIC_PATTERN[note_in_oct]
+    return int(np.clip(midi, 21, 108))
+
+
+def transcribe_sheet_image_cv_to_midi(image_paths: List[Path], output_midi_path: Path) -> bool:
+    """
+    Deterministic Computer Vision Grand-Staff Visual OMR:
+    1. Grayscale + adaptive binarization to detect sheet ink.
+    2. Horizontal projection profile to detect 5-line staves & line spacing (d).
+    3. Group staves into Grand Staff pairs (Top = Treble, Bottom = Bass).
+    4. Remove thin staff lines via vertical morphology and locate notehead blobs.
+    5. Map vertical line/space position to MIDI pitch and horizontal position to timeline.
+    6. Writes Right Hand (Track 1) and Left Hand (Track 2) to Standard MIDI via pretty_midi.
+    """
+    if not HAS_PIL or not HAS_PRETTY_MIDI or not HAS_NDI:
+        return False
+
+    all_notes: List[Dict[str, Any]] = []
+    current_time_offset = 0.0
+    system_duration = 7.0  # seconds per grand staff system
+
+    for img_path in image_paths:
+        try:
+            with Image.open(str(img_path)) as pil_img:
+                gray = pil_img.convert("L")
+                w, h = gray.size
+                if w < 100 or h < 100:
+                    continue
+                if w > 2400:
+                    scale = 2400.0 / w
+                    gray = gray.resize((2400, int(round(h * scale))), Image.Resampling.BILINEAR)
+                    w, h = gray.size
+                img_arr = np.array(gray)
+        except Exception as e:
+            print(f"[KeyFlow OMR] Could not load image {img_path}: {e}")
+            continue
+
+        # 1. Binarize: black ink = 1, white paper = 0
+        thresh = float(np.mean(img_arr)) * 0.85
+        binary = (img_arr < thresh).astype(np.uint8)
+
+        # 2. Horizontal projection profile
+        h_proj = np.sum(binary, axis=1)
+        line_thresh = max(int(w * 0.22), int(np.percentile(h_proj, 88)))
+
+        line_ys = []
+        in_run = False
+        run_start = 0
+        for y in range(h):
+            if h_proj[y] >= line_thresh:
+                if not in_run:
+                    in_run = True
+                    run_start = y
+            else:
+                if in_run:
+                    in_run = False
+                    line_ys.append(int(round((run_start + y - 1) / 2.0)))
+        if in_run:
+            line_ys.append(int(round((run_start + h - 1) / 2.0)))
+
+        if len(line_ys) < 5:
+            continue
+
+        # 3. Group lines into 5-line staves
+        detected_staves = []
+        i = 0
+        while i <= len(line_ys) - 5:
+            spacings = [line_ys[i + j + 1] - line_ys[i + j] for j in range(4)]
+            avg_d = np.mean(spacings)
+            std_d = np.std(spacings)
+            if 6.0 <= avg_d <= 45.0 and std_d <= 3.5:
+                staff_lines = line_ys[i:i + 5]
+                detected_staves.append({
+                    "lines": staff_lines,
+                    "top": staff_lines[0],
+                    "bottom": staff_lines[4],
+                    "d": float(avg_d),
+                    "center": float(np.mean(staff_lines))
+                })
+                i += 5
+            else:
+                i += 1
+
+        if not detected_staves:
+            continue
+
+        # 4. Group into grand staff pairs (Top = Treble, Bottom = Bass)
+        grand_staves = []
+        s_idx = 0
+        while s_idx < len(detected_staves):
+            st1 = detected_staves[s_idx]
+            if s_idx + 1 < len(detected_staves):
+                st2 = detected_staves[s_idx + 1]
+                gap = st2["top"] - st1["bottom"]
+                if 1.5 * st1["d"] <= gap <= 10.0 * st1["d"]:
+                    grand_staves.append({"treble": st1, "bass": st2, "d": (st1["d"] + st2["d"]) / 2.0})
+                    s_idx += 2
+                    continue
+            grand_staves.append({"treble": st1, "bass": None, "d": st1["d"]})
+            s_idx += 1
+
+        # 5. Notehead segmentation: vertical morphological opening
+        typical_d = int(round(np.median([gs["d"] for gs in grand_staves])))
+        v_kernel_h = max(3, int(round(typical_d * 0.55)))
+        v_kernel = np.ones((v_kernel_h, 1), dtype=np.uint8)
+        note_mask = ndi.binary_opening(binary, structure=v_kernel)
+
+        labeled, num_features = ndi.label(note_mask)
+        objects = ndi.find_objects(labeled)
+
+        # 6. Map notehead blobs to pitch and time
+        for gs_idx, gs in enumerate(grand_staves):
+            d = gs["d"]
+            treble = gs["treble"]
+            bass = gs["bass"]
+            sys_time_start = current_time_offset + (gs_idx * system_duration)
+
+            min_y = treble["top"] - int(d * 4.0)
+            max_y = (bass["bottom"] if bass else treble["bottom"]) + int(d * 4.0)
+            x_start_margin = int(w * 0.08)
+            x_end_margin = int(w * 0.96)
+            sys_width = max(100, x_end_margin - x_start_margin)
+
+            for sl_y, sl_x in objects:
+                if sl_y is None or sl_x is None:
+                    continue
+                y_min, y_max = sl_y.start, sl_y.stop
+                x_min, x_max = sl_x.start, sl_x.stop
+
+                yc = (y_min + y_max) / 2.0
+                xc = (x_min + x_max) / 2.0
+
+                if not (min_y <= yc <= max_y and x_start_margin <= xc <= x_end_margin):
+                    continue
+
+                blob_h = y_max - y_min
+                blob_w = x_max - x_min
+
+                if not (0.55 * d <= blob_h <= 1.9 * d and 0.55 * d <= blob_w <= 2.6 * d):
+                    continue
+                if not (0.35 <= (blob_w / max(1.0, blob_h)) <= 3.2):
+                    continue
+
+                hand = 'R'
+                if bass is not None:
+                    dist_to_treble = abs(yc - treble["center"])
+                    dist_to_bass = abs(yc - bass["center"])
+                    if dist_to_bass < dist_to_treble:
+                        hand = 'L'
+
+                if hand == 'R':
+                    step_offset = int(round((treble["bottom"] - yc) / (d / 2.0)))
+                    midi = diatonic_step_to_midi(base_step_in_c=2, base_octave=4, step_offset=step_offset)
+                else:
+                    ref_bottom = bass["bottom"] if bass else treble["bottom"]
+                    step_offset = int(round((ref_bottom - yc) / (d / 2.0)))
+                    midi = diatonic_step_to_midi(base_step_in_c=4, base_octave=2, step_offset=step_offset)
+
+                t = sys_time_start + ((xc - x_start_margin) / float(sys_width)) * (system_duration * 0.92)
+                all_notes.append({
+                    "midi": midi,
+                    "time": round(float(t), 3),
+                    "duration": 0.48,
+                    "hand": hand,
+                    "velocity": 85 if hand == 'R' else 78
+                })
+
+        current_time_offset += len(grand_staves) * system_duration
+
+    if not all_notes:
+        return False
+
+    all_notes.sort(key=lambda n: (n["time"], n["midi"]))
+
+    pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
+    rh_inst = pretty_midi.Instrument(program=0, name="Right Hand")
+    lh_inst = pretty_midi.Instrument(program=0, name="Left Hand")
+
+    for n in all_notes:
+        note_obj = pretty_midi.Note(
+            velocity=n["velocity"],
+            pitch=n["midi"],
+            start=n["time"],
+            end=n["time"] + n["duration"]
+        )
+        if n["hand"] == 'L':
+            lh_inst.notes.append(note_obj)
+        else:
+            rh_inst.notes.append(note_obj)
+
+    pm.instruments.append(rh_inst)
+    pm.instruments.append(lh_inst)
+    pm.write(str(output_midi_path))
+    return output_midi_path.exists() and output_midi_path.stat().st_size > 80
+
+
+def extract_musicxml_text_from_mxl(mxl_bytes: bytes) -> str:
+    """Extracts score XML text from a compressed .mxl ZIP archive."""
+    buf = io.BytesIO(mxl_bytes)
+    with zipfile.ZipFile(buf, "r") as z:
+        target_name = None
+        for name in z.namelist():
+            if name.lower() == "meta-inf/container.xml":
+                try:
+                    c_xml = z.read(name).decode("utf-8", errors="ignore")
+                    m = re.search(r'full-path\s*=\s*["\']([^"\']+)["\']', c_xml, re.IGNORECASE)
+                    if m:
+                        target_name = m.group(1).strip()
+                except Exception:
+                    pass
+
+        if target_name and target_name in z.namelist():
+            return z.read(target_name).decode("utf-8", errors="ignore")
+
+        candidates = [n for n in z.namelist() if (n.lower().endswith(".musicxml") or n.lower().endswith(".xml")) and not n.lower().startswith("meta-inf/")]
+        if not candidates:
+            raise ValueError("No score XML file found in .mxl archive.")
+        candidates.sort(key=lambda n: z.getinfo(n).file_size, reverse=True)
+        return z.read(candidates[0]).decode("utf-8", errors="ignore")
+
+
+async def omr_endpoint_handler(file: UploadFile = File(...)) -> Dict[str, Any]:
+    """
+    Phase 5: Optical Music Recognition (OMR) & Sheet Music Endpoint.
+    Accepts .pdf, .png, .jpg, .jpeg, .webp, .musicxml, or .mxl and returns
+    either parsed MusicXML or base64 Standard MIDI.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing sheet music filename.")
+
+    clean_title = Path(file.filename).stem or "Sheet Music Song"
+    raw_suffix = Path(file.filename).suffix.lower()
+    if raw_suffix not in ALLOWED_OMR_SUFFIXES:
+        raise HTTPException(status_code=400, detail=f"Unsupported sheet music file extension: {raw_suffix}")
+
+    raw_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded sheet music file is empty.")
+    if len(raw_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Sheet music file exceeds 50 MB limit.")
+
+    # 1. Digital MusicXML or MXL uploads: extract and return MusicXML directly
+    if raw_suffix in (".musicxml", ".xml"):
+        return {
+            "musicxml": raw_bytes.decode("utf-8", errors="ignore"),
+            "title": clean_title,
+        }
+
+    if raw_suffix == ".mxl":
+        try:
+            xml_text = extract_musicxml_text_from_mxl(raw_bytes)
+            return {
+                "musicxml": xml_text,
+                "title": clean_title,
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"Could not unpack .mxl archive: {exc}")
+
+    # 2. Visual scans (.pdf, .png, .jpg, .jpeg, .webp): run OMR pipeline
+    def _sync_omr() -> str:
+        os.makedirs("/tmp", exist_ok=True)
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="keyflow_omr_") as tmp_dir:
+            work_dir = Path(tmp_dir)
+            input_path = work_dir / f"upload{raw_suffix}"
+            input_path.write_bytes(raw_bytes)
+
+            image_paths = []
+            if raw_suffix == ".pdf":
+                image_paths = render_pdf_to_images(input_path, work_dir, max_pages=8)
+            else:
+                image_paths = [input_path]
+
+            if not image_paths:
+                raise RuntimeError("No rendered pages available for OMR processing.")
+
+            output_midi = work_dir / "transcribed_sheet.mid"
+            ok = transcribe_sheet_image_cv_to_midi(image_paths, output_midi)
+            if not ok or not output_midi.exists():
+                raise RuntimeError("No readable piano staves or noteheads detected in sheet music image.")
+
+            return base64.b64encode(output_midi.read_bytes()).decode("ascii")
+
+    try:
+        b64_str = await run_in_threadpool(_sync_omr)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "midi_base64": b64_str,
+        "title": clean_title,
+    }
+
+
 def register_keyflow_routes(fastapi_app: FastAPI) -> FastAPI:
-    """Idempotently attaches CORS and KeyFlow's /health & /api/transcribe endpoints to Gradio's FastAPI app."""
+    """Idempotently attaches CORS, /health, /api/transcribe, and /api/omr endpoints to Gradio's FastAPI app."""
     if fastapi_app is None or getattr(fastapi_app, "_keyflow_routes_registered", False):
         return fastapi_app
 
@@ -566,6 +913,7 @@ def register_keyflow_routes(fastapi_app: FastAPI) -> FastAPI:
     )
     fastapi_app.get("/health")(health_check_handler)
     fastapi_app.post("/api/transcribe")(transcribe_endpoint_handler)
+    fastapi_app.post("/api/omr")(omr_endpoint_handler)
     return fastapi_app
 
 
@@ -582,17 +930,18 @@ if hasattr(gr, "routes") and hasattr(gr.routes, "App") and hasattr(gr.routes.App
 
 
 # 1. Create the Gradio Blocks UI and wire the @spaces.GPU function so ZeroGPU detects it during startup
-with gr.Blocks(title="KeyFlow AI Audio-to-MIDI Server") as demo:
+with gr.Blocks(title="KeyFlow AI Audio & Sheet Music Server") as demo:
     gr.Markdown(
         """
-        # 🎹 KeyFlow AI Audio-to-MIDI Server (ZeroGPU Online)
-        This Hugging Face Gradio Space powers **Phase 3 AI Audio-to-MIDI Transcription** (`HT-Demucs 6S` + `ByteDance Piano AI`) on **ZeroGPU** for the **KeyFlow Virtual Piano** iPad web app.
+        # 🎹 KeyFlow AI Audio & Sheet Music Server (ZeroGPU Online)
+        This Hugging Face Gradio Space powers **Phase 3 AI Audio-to-MIDI Transcription** (`HT-Demucs 6S` + `ByteDance Piano AI`) and **Phase 5 Sheet Music Optical Music Recognition (OMR)** on **ZeroGPU** for the **KeyFlow Virtual Piano** iPad web app.
 
         ### Active API Endpoints
-        - **`GET /health`** — Returns server health & active engines (`HT-Demucs 6S`, `ByteDance Piano AI`).
+        - **`GET /health`** — Returns server health & active engines (`HT-Demucs 6S`, `ByteDance Piano AI`, `Sheet-OMR`).
         - **`POST /api/transcribe`** — Accepts `file`, `isolate_piano`, and `sensitivity` (`multipart/form-data`) and returns `{"midi_base64": "...", "title": "..."}`.
+        - **`POST /api/omr`** — Accepts sheet music (`.pdf`, `.png`, `.jpg`, `.musicxml`, `.mxl`) and returns `{"musicxml": "..."}` or `{"midi_base64": "..."}`.
 
-        **How to connect from KeyFlow:** Copy this Space's public `.hf.space` URL (e.g. `https://<username>-<space-name>.hf.space`) into the **AI Server URL** field inside KeyFlow's **AI Audio** modal and tap **Check**.
+        **How to connect from KeyFlow:** Copy this Space's public `.hf.space` URL (e.g. `https://<username>-<space-name>.hf.space`) into the **AI Server URL** field inside KeyFlow's **AI Audio** or **Sheet Music** modal and tap **Check**.
         """
     )
     with gr.Row():
