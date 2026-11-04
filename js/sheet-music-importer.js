@@ -51,38 +51,125 @@
   async function extractMusicXmlFromMxl(arrayBuffer) {
     const view = new DataView(arrayBuffer);
     const byteLen = arrayBuffer.byteLength;
-    let pos = 0;
     const entries = [];
 
-    // Scan ZIP local file headers (Signature 0x04034b50 -> 'PK\x03\x04')
-    while (pos + 30 <= byteLen) {
-      if (view.getUint32(pos, true) !== 0x04034b50) {
-        // Scan forward one byte if alignment shifted
-        pos++;
-        continue;
+    // Attempt 1: Locate End of Central Directory Record (EOCD: 0x06054b50) to read Central Directory
+    let cdOffset = -1;
+    const minEocdSearch = Math.max(0, byteLen - 65557);
+    for (let p = byteLen - 22; p >= minEocdSearch; p--) {
+      if (view.getUint32(p, true) === 0x06054b50) {
+        cdOffset = view.getUint32(p + 16, true);
+        break;
       }
+    }
 
-      const method = view.getUint16(pos + 8, true);
-      const compressedSize = view.getUint32(pos + 18, true);
-      const uncompressedSize = view.getUint32(pos + 22, true);
-      const fileNameLen = view.getUint16(pos + 26, true);
-      const extraLen = view.getUint16(pos + 28, true);
+    // Read Central Directory entries (accurate compressedSize and method even with ZIP data descriptors)
+    if (cdOffset >= 0 && cdOffset < byteLen) {
+      let pos = cdOffset;
+      while (pos + 46 <= byteLen && view.getUint32(pos, true) === 0x02014b50) {
+        const method = view.getUint16(pos + 10, true);
+        const compressedSize = view.getUint32(pos + 20, true);
+        const uncompressedSize = view.getUint32(pos + 24, true);
+        const fileNameLen = view.getUint16(pos + 28, true);
+        const extraLen = view.getUint16(pos + 30, true);
+        const commentLen = view.getUint16(pos + 32, true);
+        const localHeaderOffset = view.getUint32(pos + 42, true);
 
-      const nameBytes = new Uint8Array(arrayBuffer, pos + 30, fileNameLen);
-      const fileName = new TextDecoder('utf-8').decode(nameBytes);
+        const nameBytes = new Uint8Array(arrayBuffer, pos + 46, fileNameLen);
+        const fileName = new TextDecoder('utf-8').decode(nameBytes);
 
-      const dataOffset = pos + 30 + fileNameLen + extraLen;
-      if (dataOffset + compressedSize <= byteLen) {
-        entries.push({
-          name: fileName,
-          method: method,
-          compressedSize: compressedSize,
-          uncompressedSize: uncompressedSize,
-          offset: dataOffset
-        });
+        // Compute data offset from the entry's Local File Header
+        if (localHeaderOffset + 30 <= byteLen && view.getUint32(localHeaderOffset, true) === 0x04034b50) {
+          const localNameLen = view.getUint16(localHeaderOffset + 26, true);
+          const localExtraLen = view.getUint16(localHeaderOffset + 28, true);
+          const dataOffset = localHeaderOffset + 30 + localNameLen + localExtraLen;
+
+          if (dataOffset + compressedSize <= byteLen) {
+            entries.push({
+              name: fileName,
+              method: method,
+              compressedSize: compressedSize,
+              uncompressedSize: uncompressedSize,
+              offset: dataOffset
+            });
+          }
+        }
+
+        pos += 46 + fileNameLen + extraLen + commentLen;
       }
+    }
 
-      pos = dataOffset + compressedSize;
+    // Attempt 2: If EOCD failed, scan for Central Directory headers (0x02014b50) anywhere in buffer
+    if (entries.length === 0) {
+      let pos = 0;
+      while (pos + 46 <= byteLen) {
+        if (view.getUint32(pos, true) === 0x02014b50) {
+          const method = view.getUint16(pos + 10, true);
+          const compressedSize = view.getUint32(pos + 20, true);
+          const uncompressedSize = view.getUint32(pos + 24, true);
+          const fileNameLen = view.getUint16(pos + 28, true);
+          const extraLen = view.getUint16(pos + 30, true);
+          const commentLen = view.getUint16(pos + 32, true);
+          const localHeaderOffset = view.getUint32(pos + 42, true);
+
+          const nameBytes = new Uint8Array(arrayBuffer, pos + 46, fileNameLen);
+          const fileName = new TextDecoder('utf-8').decode(nameBytes);
+
+          if (localHeaderOffset + 30 <= byteLen && view.getUint32(localHeaderOffset, true) === 0x04034b50) {
+            const localNameLen = view.getUint16(localHeaderOffset + 26, true);
+            const localExtraLen = view.getUint16(localHeaderOffset + 28, true);
+            const dataOffset = localHeaderOffset + 30 + localNameLen + localExtraLen;
+
+            if (dataOffset + compressedSize <= byteLen) {
+              entries.push({
+                name: fileName,
+                method: method,
+                compressedSize: compressedSize,
+                uncompressedSize: uncompressedSize,
+                offset: dataOffset
+              });
+            }
+          }
+
+          pos += 46 + fileNameLen + extraLen + commentLen;
+        } else {
+          pos++;
+        }
+      }
+    }
+
+    // Attempt 3: Fallback to Local File Header scan (0x04034b50) only if no Central Directory was found
+    if (entries.length === 0) {
+      let pos = 0;
+      while (pos + 30 <= byteLen) {
+        if (view.getUint32(pos, true) !== 0x04034b50) {
+          pos++;
+          continue;
+        }
+
+        const method = view.getUint16(pos + 8, true);
+        const compressedSize = view.getUint32(pos + 18, true);
+        const uncompressedSize = view.getUint32(pos + 22, true);
+        const fileNameLen = view.getUint16(pos + 26, true);
+        const extraLen = view.getUint16(pos + 28, true);
+
+        const nameBytes = new Uint8Array(arrayBuffer, pos + 30, fileNameLen);
+        const fileName = new TextDecoder('utf-8').decode(nameBytes);
+
+        const dataOffset = pos + 30 + fileNameLen + extraLen;
+        if (compressedSize > 0 && dataOffset + compressedSize <= byteLen) {
+          entries.push({
+            name: fileName,
+            method: method,
+            compressedSize: compressedSize,
+            uncompressedSize: uncompressedSize,
+            offset: dataOffset
+          });
+          pos = dataOffset + compressedSize;
+        } else {
+          pos += 30 + fileNameLen + extraLen;
+        }
+      }
     }
 
     if (entries.length === 0) {

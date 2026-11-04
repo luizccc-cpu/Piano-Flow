@@ -3525,9 +3525,10 @@
   let isTranscribing = false;
 
   try {
-    const savedServerUrl = localStorage.getItem('keyflow_ai_server_url');
-    if (savedServerUrl && aiServerUrlInput) {
-      aiServerUrlInput.value = savedServerUrl;
+    const savedServerUrl = localStorage.getItem('keyflow_ai_server_url') || localStorage.getItem('keyflow_omr_server_url');
+    if (savedServerUrl) {
+      if (aiServerUrlInput) aiServerUrlInput.value = savedServerUrl;
+      if (sheetServerUrlInput) sheetServerUrlInput.value = savedServerUrl;
     }
   } catch (e) {}
 
@@ -3579,6 +3580,8 @@
     const url = aiServerUrlInput.value.trim();
     try {
       localStorage.setItem('keyflow_ai_server_url', url);
+      localStorage.setItem('keyflow_omr_server_url', url);
+      if (sheetServerUrlInput) sheetServerUrlInput.value = url;
     } catch (e) {}
     aiServerStatusPill.className = 'server-status-pill';
     aiServerStatusPill.textContent = 'Checking...';
@@ -3802,13 +3805,15 @@
 
   try {
     const savedOmrUrl = localStorage.getItem('keyflow_omr_server_url') || localStorage.getItem('keyflow_ai_server_url');
-    if (savedOmrUrl && sheetServerUrlInput) {
-      sheetServerUrlInput.value = savedOmrUrl;
+    if (savedOmrUrl) {
+      if (sheetServerUrlInput) sheetServerUrlInput.value = savedOmrUrl;
+      if (aiServerUrlInput) aiServerUrlInput.value = savedOmrUrl;
     }
   } catch (e) {}
 
   function setSheetModalOpen(open) {
     if (!sheetModal) return;
+    sheetModal.style.display = '';
     sheetModal.classList.toggle('open', !!open);
     sheetModal.setAttribute('aria-hidden', open ? 'false' : 'true');
     if (open) {
@@ -3831,11 +3836,9 @@
       const isDigital = name.endsWith('.musicxml') || name.endsWith('.xml') || name.endsWith('.mxl');
 
       if (selectedSheetFileName) {
-        selectedSheetFileName.style.display = 'block';
         selectedSheetFileName.textContent = 'Selected: ' + selectedSheetFile.name + ' (' + sizeMb + ' MB)';
       }
       if (selectedSheetFileMeta) {
-        selectedSheetFileMeta.style.display = 'block';
         selectedSheetFileMeta.textContent = isDigital
           ? 'Digital score: Parses instantly offline in your browser'
           : 'Visual score scan: Converts via Python CV / AI OMR Server';
@@ -3846,12 +3849,10 @@
     } else {
       if (sheetDropZone) sheetDropZone.classList.remove('has-file');
       if (selectedSheetFileName) {
-        selectedSheetFileName.style.display = 'none';
-        selectedSheetFileName.textContent = '';
+        selectedSheetFileName.textContent = 'Tap to choose Sheet Music (.MusicXML, .MXL, .PDF, .PNG, .JPG)';
       }
       if (selectedSheetFileMeta) {
-        selectedSheetFileMeta.style.display = 'none';
-        selectedSheetFileMeta.textContent = '';
+        selectedSheetFileMeta.textContent = 'Digital scores (.musicxml, .mxl) import instantly offline • Scans (.pdf, .png, .jpg) use AI Server OMR';
       }
       if (startSheetImportBtn) {
         startSheetImportBtn.disabled = true;
@@ -3864,6 +3865,8 @@
     const url = sheetServerUrlInput.value.trim();
     try {
       localStorage.setItem('keyflow_omr_server_url', url);
+      localStorage.setItem('keyflow_ai_server_url', url);
+      if (aiServerUrlInput) aiServerUrlInput.value = url;
     } catch (e) {}
 
     sheetServerStatusPill.className = 'server-status-pill';
@@ -3936,10 +3939,6 @@
     sheetDropZone.addEventListener('click', function (e) {
       if (isImportingSheet) {
         e.preventDefault();
-        return;
-      }
-      if (sheetFileInput && e.target !== sheetFileInput) {
-        sheetFileInput.click();
       }
     });
     sheetDropZone.addEventListener('dragover', function (e) {
