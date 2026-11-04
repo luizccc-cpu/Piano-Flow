@@ -3524,13 +3524,34 @@
   let isolatePianoStem = true;
   let isTranscribing = false;
 
-  try {
-    const savedServerUrl = localStorage.getItem('keyflow_ai_server_url') || localStorage.getItem('keyflow_omr_server_url');
-    if (savedServerUrl) {
-      if (aiServerUrlInput) aiServerUrlInput.value = savedServerUrl;
-      if (sheetServerUrlInput) sheetServerUrlInput.value = savedServerUrl;
-    }
-  } catch (e) {}
+  /********************************************************************
+   * UNIFIED AI & OMR SERVER URL PERSISTENCE & SYNC
+   ********************************************************************/
+  function getSavedServerUrl() {
+    try {
+      const u = localStorage.getItem('keyflow_ai_server_url') ||
+                localStorage.getItem('keyflow_omr_server_url');
+      if (u && typeof u === 'string' && u.trim().length > 0) {
+        return u.trim();
+      }
+    } catch (e) {}
+    return 'http://localhost:8000';
+  }
+
+  function setSavedServerUrl(url) {
+    const clean = (url || '').trim() || 'http://localhost:8000';
+    try {
+      localStorage.setItem('keyflow_ai_server_url', clean);
+      localStorage.setItem('keyflow_omr_server_url', clean);
+    } catch (e) {}
+    const aiInput = document.getElementById('aiServerUrlInput');
+    const sheetInput = document.getElementById('sheetServerUrlInput');
+    if (aiInput && aiInput.value !== clean) aiInput.value = clean;
+    if (sheetInput && sheetInput.value !== clean) sheetInput.value = clean;
+  }
+
+  const initialServerUrl = getSavedServerUrl();
+  if (aiServerUrlInput) aiServerUrlInput.value = initialServerUrl;
 
   function setTranscriberModalOpen(open) {
     if (!transcriberModal) return;
@@ -3539,6 +3560,10 @@
     if (open) {
       setPlaying(false);
       if (audioFileInput) audioFileInput.value = '';
+      const currentUrl = getSavedServerUrl();
+      if (aiServerUrlInput) aiServerUrlInput.value = currentUrl;
+      const sheetInput = document.getElementById('sheetServerUrlInput');
+      if (sheetInput) sheetInput.value = currentUrl;
       refreshServerHealthStatus();
     }
   }
@@ -3577,15 +3602,11 @@
 
   async function refreshServerHealthStatus() {
     if (!audioTranscriber || !aiServerUrlInput || !aiServerStatusPill) return;
-    const url = aiServerUrlInput.value.trim();
-    try {
-      localStorage.setItem('keyflow_ai_server_url', url);
-      localStorage.setItem('keyflow_omr_server_url', url);
-      if (sheetServerUrlInput) sheetServerUrlInput.value = url;
-    } catch (e) {}
+    const url = aiServerUrlInput.value.trim() || getSavedServerUrl();
+    setSavedServerUrl(url);
     aiServerStatusPill.className = 'server-status-pill';
     aiServerStatusPill.textContent = 'Checking...';
-    const status = await audioTranscriber.checkServerHealth(url, 1600);
+    const status = await audioTranscriber.checkServerHealth(url, 4000);
     if (status.ok) {
       aiServerStatusPill.className = 'server-status-pill online';
       const info = status.data || status.info;
@@ -3595,6 +3616,12 @@
       aiServerStatusPill.className = 'server-status-pill offline';
       aiServerStatusPill.textContent = 'Offline (Browser Engine Ready)';
     }
+  }
+
+  if (aiServerUrlInput) {
+    aiServerUrlInput.addEventListener('input', function () {
+      setSavedServerUrl(aiServerUrlInput.value);
+    });
   }
 
   // Phase 4B: Song Library Backup (.keyflow.json) & Restore
@@ -3729,7 +3756,8 @@
       const sensitivity = transcribeSensitivitySlider
         ? (parseInt(transcribeSensitivitySlider.value, 10) || 55)
         : 55;
-      const serverUrl = aiServerUrlInput ? aiServerUrlInput.value.trim() : 'http://localhost:8000';
+      const serverUrl = (aiServerUrlInput ? aiServerUrlInput.value.trim() : '') || getSavedServerUrl();
+      setSavedServerUrl(serverUrl);
 
       try {
         const songObj = await audioTranscriber.transcribeAudioFile(
@@ -3803,13 +3831,9 @@
   let selectedSheetFile = null;
   let isImportingSheet = false;
 
-  try {
-    const savedOmrUrl = localStorage.getItem('keyflow_omr_server_url') || localStorage.getItem('keyflow_ai_server_url');
-    if (savedOmrUrl) {
-      if (sheetServerUrlInput) sheetServerUrlInput.value = savedOmrUrl;
-      if (aiServerUrlInput) aiServerUrlInput.value = savedOmrUrl;
-    }
-  } catch (e) {}
+  if (sheetServerUrlInput) {
+    sheetServerUrlInput.value = getSavedServerUrl();
+  }
 
   function setSheetModalOpen(open) {
     if (!sheetModal) return;
@@ -3819,6 +3843,9 @@
     if (open) {
       setPlaying(false);
       if (sheetFileInput) sheetFileInput.value = '';
+      const currentUrl = getSavedServerUrl();
+      if (sheetServerUrlInput) sheetServerUrlInput.value = currentUrl;
+      if (aiServerUrlInput) aiServerUrlInput.value = currentUrl;
       refreshSheetServerStatus();
     }
   }
@@ -3862,44 +3889,31 @@
 
   async function refreshSheetServerStatus() {
     if (!sheetServerUrlInput || !sheetServerStatusPill) return;
-    const url = sheetServerUrlInput.value.trim();
-    try {
-      localStorage.setItem('keyflow_omr_server_url', url);
-      localStorage.setItem('keyflow_ai_server_url', url);
-      if (aiServerUrlInput) aiServerUrlInput.value = url;
-    } catch (e) {}
+    const url = sheetServerUrlInput.value.trim() || getSavedServerUrl();
+    setSavedServerUrl(url);
 
     sheetServerStatusPill.className = 'server-status-pill';
     sheetServerStatusPill.textContent = 'Checking...';
 
-    let isOk = false;
-    try {
-      const ctrl = new AbortController();
-      const tId = setTimeout(function () { ctrl.abort(); }, 1600);
-      const res = await fetch(url.replace(/\/+$/, '') + '/api/health', { method: 'GET', signal: ctrl.signal });
-      clearTimeout(tId);
-      if (res.ok) {
-        isOk = true;
-      }
-    } catch (e) {
-      try {
-        const ctrl2 = new AbortController();
-        const tId2 = setTimeout(function () { ctrl2.abort(); }, 1200);
-        const res2 = await fetch(url.replace(/\/+$/, '') + '/health', { method: 'GET', signal: ctrl2.signal });
-        clearTimeout(tId2);
-        if (res2.ok) {
-          isOk = true;
-        }
-      } catch (e2) {}
-    }
+    const status = (audioTranscriber && typeof audioTranscriber.checkServerHealth === 'function')
+      ? await audioTranscriber.checkServerHealth(url, 4000)
+      : { ok: false };
 
-    if (isOk) {
+    if (status.ok) {
       sheetServerStatusPill.className = 'server-status-pill online';
-      sheetServerStatusPill.textContent = 'Online (OMR + MusicXML)';
+      const info = status.data || status.info;
+      const engines = (info && Array.isArray(info.engines)) ? info.engines.join(' + ') : 'OMR + MusicXML';
+      sheetServerStatusPill.textContent = 'Online (' + engines + ')';
     } else {
       sheetServerStatusPill.className = 'server-status-pill offline';
       sheetServerStatusPill.textContent = 'Offline (Digital Scores Ready)';
     }
+  }
+
+  if (sheetServerUrlInput) {
+    sheetServerUrlInput.addEventListener('input', function () {
+      setSavedServerUrl(sheetServerUrlInput.value);
+    });
   }
 
   if (homeOpenSheetModalBtn) {
@@ -3972,7 +3986,8 @@
       if (sheetErrorBox) sheetErrorBox.style.display = 'none';
       if (sheetProgressWrap) sheetProgressWrap.style.display = 'flex';
 
-      const serverUrl = sheetServerUrlInput ? sheetServerUrlInput.value.trim() : 'http://localhost:8000';
+      const serverUrl = (sheetServerUrlInput ? sheetServerUrlInput.value.trim() : '') || getSavedServerUrl();
+      setSavedServerUrl(serverUrl);
 
       try {
         const songObj = await window.sheetMusicImporter.importSheetMusicFile(

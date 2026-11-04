@@ -912,6 +912,7 @@ def register_keyflow_routes(fastapi_app: FastAPI) -> FastAPI:
         allow_credentials=False,
     )
     fastapi_app.get("/health")(health_check_handler)
+    fastapi_app.get("/api/health")(health_check_handler)
     fastapi_app.post("/api/transcribe")(transcribe_endpoint_handler)
     fastapi_app.post("/api/omr")(omr_endpoint_handler)
     return fastapi_app
