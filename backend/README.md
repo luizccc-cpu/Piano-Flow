@@ -1,3 +1,15 @@
+---
+title: Keyflow Ai
+emoji: 💻
+colorFrom: pink
+colorTo: indigo
+sdk: gradio
+sdk_version: 6.30.0
+python_version: '3.12'
+app_file: app.py
+pinned: false 
+---
+
 # KeyFlow AI Audio-to-MIDI Backend (`backend/`)
 
 This Python backend powers **Studio AI Dedicated Piano Stem Separation (`HT-Demucs 6S`)** and **Neural Polyphonic Piano Transcription (`ByteDance Piano Transcription` / `Basic Pitch` / `Librosa CQT`)** with **Post-HPSS Harmonic Cleaning & MIDI Bleed Filtering** for the KeyFlow Virtual Piano iPad & Web application.
