@@ -12,7 +12,7 @@ pinned: false
 
 # KeyFlow AI Audio-to-MIDI Backend (`backend/`)
 
-This Python backend powers **Studio AI Dedicated Piano Stem Separation (`HT-Demucs 6S`)** and **Neural Polyphonic Piano Transcription (`ByteDance Piano Transcription` / `Basic Pitch` / `Librosa CQT`)** with **Post-HPSS Harmonic Cleaning & MIDI Bleed Filtering** for the KeyFlow Virtual Piano iPad & Web application.
+This Python backend powers **Studio AI Dedicated Piano Stem Separation (`BS-RoFormer` / `HT-Demucs 6S`)** and **State-of-the-Art Neural Polyphonic Piano Transcription (`Transkun` / `ByteDance Piano AI` / `Basic Pitch` / `Librosa CQT`)** with **Minimal Stem Preparation & Adaptive MIDI Bleed Filtering** for the KeyFlow Virtual Piano iPad & Web application.
 
 > **Offline Fallback:** Even when no Python backend is running, the KeyFlow frontend includes an **In-Browser Web Audio API Polyphonic Piano Transcriber** (`js/audio-transcriber.js`), allowing `.mp3`, `.wav`, `.m4a`, and `.ogg` files to be transcribed 100% offline directly on iPad via GitHub Pages.
 
@@ -20,16 +20,34 @@ This Python backend powers **Studio AI Dedicated Piano Stem Separation (`HT-Demu
 
 ## Architecture & Audio Pipeline
 
-1. **6-Stem Dedicated Piano Isolation (`HT-Demucs 6S`):**
-   - Uses `htdemucs_6s --two-stems piano` to separate a dedicated piano track from guitars, bass, drums, vocals, and synths (falling back to 4-stem `htdemucs` and Librosa HPSS if unavailable).
-2. **Post-Demucs Harmonic & Bandpass Cleaning (`clean_isolated_piano_audio`):**
-   - Strips residual percussive bleed via Librosa HPSS (`margin=(1.0, 2.2)`).
-   - Applies a piano fundamental bandpass filter (`27.5 Hz` A0 to `4400 Hz` C8) via `scipy.signal.butter` + `sosfiltfilt` to remove sub-bass rumble and high-hat hiss.
-   - Peak normalizes audio prior to neural transcription.
-3. **High-Resolution Transcription & Bleed Filtering (`filter_midi_bleed_notes`):**
-   - Transcribes with ByteDance CRNN high-resolution onsets & frames.
+1. **Multi-Tier Dedicated Piano Stem Isolation:**
+   - **Tier 1 (Primary):** `BS-RoFormer` 6-stem separation via `audio-separator` (`BS-Roformer-SW.ckpt`), isolating piano with industry-leading SDR from vocals, guitars, bass, drums, and other accompaniment.
+   - **Tier 2:** `HT-Demucs 6S` dedicated piano stem (`htdemucs_6s --two-stems piano`).
+   - **Tier 3:** `HT-Demucs 4S` accompaniment stem (`htdemucs --two-stems other`).
+   - **Tier 4 (Fallback):** Librosa HPSS harmonic separation with softened margin `(1.0, 1.5)`.
+
+2. **Minimal Stem Preparation (`prepare_stem_for_transcription`):**
+   - Preserves native sample rate and full audio frequency spectrum (no aggressive HPSS or 4.4 kHz low-pass filters that destroy piano hammer attack transients and harmonic overtones).
+   - Applies only a gentle ~20 Hz 2nd-order Butterworth high-pass filter (`scipy.signal.butter` + `sosfiltfilt`) to strip sub-audible DC/sub-bass rumble.
+   - Peak normalizes audio to 0.95 prior to neural transcription.
+   - Configurable via `KEYFLOW_STEM_PREP` environment variable:
+     - `minimal` (default): gentle 20 Hz high-pass + 0.95 peak norm.
+     - `legacy`: previous HPSS percussive strip + 27.5–4400 Hz bandpass filtering.
+
+3. **Multi-Engine Polyphonic Transcription & Bleed Filtering:**
+   - **Tier 1 (Primary):** `Transkun` (Semi-CRF + Transformer), state-of-the-art benchmark-leading piano transcriber.
+   - **Tier 2:** `ByteDance Piano AI` (CRNN High-Resolution Onsets & Frames + Pedal model).
+   - **Tier 3:** Spotify `Basic Pitch` (neural polyphonic audio-to-MIDI, local server).
+   - **Tier 4 (Fallback):** Librosa polyphonic CQT peak tracker (guarantees a valid MIDI even in zero-dependency environments).
    - Post-filters out-of-range notes (outside MIDI 21..108), micro-glitches (`< 55ms`), and background bleed under the sensitivity-adaptive velocity threshold (default 55% sensitivity -> velocity < 28 removed).
    - Caps simultaneous note onsets within any 30ms window to 8 notes (preserving highest-velocity notes).
+
+---
+
+## Environment Variables
+
+- `KEYFLOW_STEM_PREP`: Stem preparation mode (`minimal` [default] or `legacy`).
+- `KEYFLOW_SEPARATOR_MODEL`: Checkpoint filename for `audio-separator` BS-RoFormer (default: `BS-Roformer-SW.ckpt`).
 
 ---
 
@@ -44,9 +62,9 @@ You can run the backend locally on your computer or deploy it as a free **Huggin
    cd backend
    pip install -r requirements.txt
    ```
-   *(Optional)* For full neural stem isolation and ByteDance CRNN piano transcription, install:
+   *(Optional)* For full neural stem isolation and Transkun/ByteDance CRNN piano transcription, install:
    ```bash
-   pip install demucs basic-pitch piano-transcription-inference
+   pip install audio-separator[gpu] transkun demucs basic-pitch piano-transcription-inference
    ```
 
 2. **Start the server:**
@@ -78,18 +96,19 @@ Hugging Face provides free ZeroGPU hardware (NVIDIA RTX Pro 6000 Blackwell) usin
 3. **Connect from KeyFlow:**
    - Copy your public Space URL (e.g. `https://<username>-<space-name>.hf.space`).
    - Open KeyFlow, tap **`+ AI Audio Song`**, paste the `.hf.space` URL into the **AI Server URL** field, and tap **Check**.
-   - The server will report active engines (`HT-Demucs 6S`, `ByteDance Piano AI`) on ZeroGPU.
+   - The server will report active engines (`BS-RoFormer`, `HT-Demucs 6S`, `Transkun`, `ByteDance Piano AI`) on ZeroGPU.
 
 ---
 
 ## API Endpoints
 
-- **`GET /health`** / **`GET /api/health`** — Returns server status, version, and available AI engines (`HT-Demucs-6S`, `ByteDance-Piano`, `Basic-Pitch`, `Librosa-CQT`, `Sheet-OMR`).
+- **`GET /health`** / **`GET /api/health`** — Returns server status, version, and available AI engines (`BS-RoFormer`, `HT-Demucs-6S`, `Transkun`, `ByteDance-Piano`, `Basic-Pitch`, `Librosa-CQT`, `Sheet-OMR`).
 - **`POST /api/transcribe`** — Accepts `multipart/form-data`:
   - `file`: Audio file (`.mp3`, `.wav`, `.m4a`, `.aac`, `.ogg`, `.flac`, `.webm`, max 50 MB).
-  - `isolate_piano`: `"true"` (default) to run HT-Demucs 6S dedicated piano isolation or `"false"`.
+  - `isolate_piano`: `"true"` (default) to run BS-RoFormer / HT-Demucs 6S dedicated piano isolation or `"false"`.
   - `sensitivity`: integer/float `15..85` (default `55`), normalized to `0.15..0.90`.
-  - Returns `audio/midi` (Standard MIDI binary) or JSON note stream (`{"title": "...", "bpm": 110, "notes": [...]}` or `{"midi_base64": "...", "title": "..."}`).
+  - `engine`: optional string `"auto"` (default), `"transkun"`, or `"bytedance"`.
+  - Returns JSON: `{"midi_base64": "...", "title": "...", "separator_used": "...", "transcriber_used": "..."}`.
 - **`POST /api/omr`** — Accepts `multipart/form-data`:
   - `file`: Sheet music file (`.pdf`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.musicxml`, `.mxl`, max 50 MB).
   - Digital `.musicxml` / `.mxl` files are unpacked and returned as clean score XML (`{"musicxml": "...", "title": "..."}`).

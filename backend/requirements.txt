@@ -11,7 +11,9 @@ librosa
 soundfile
 resampy
 pretty_midi
+audio-separator[gpu]
 demucs
+transkun
 piano_transcription_inference
 pypdfium2
 Pillow

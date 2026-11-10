@@ -24,17 +24,20 @@ except ImportError:
     spaces = _SpacesFallback()
 
 import base64
+import importlib.util
 import io
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB limit
 ALLOWED_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".webm", ".mp4"}
@@ -102,7 +105,36 @@ except Exception:
     HAS_BYTEDANCE = False
     BD_SAMPLE_RATE = 16000
 
+try:
+    from audio_separator.separator import Separator
+    HAS_AUDIO_SEPARATOR = True
+except Exception:
+    HAS_AUDIO_SEPARATOR = False
+
 HAS_DEMUCS = shutil.which("demucs") is not None
+
+# Prefer the 'transkun' console script because it is the documented CLI entry point.
+# Fall back to `python -m transkun.transcribe` only if the console script is not on PATH.
+HAS_TRANSKUN = False
+TRANSKUN_CMD: List[str] = []
+
+if shutil.which("transkun") is not None:
+    HAS_TRANSKUN = True
+    TRANSKUN_CMD = ["transkun"]
+else:
+    try:
+        if importlib.util.find_spec("transkun") is not None:
+            HAS_TRANSKUN = True
+            TRANSKUN_CMD = [sys.executable, "-m", "transkun.transcribe"]
+    except Exception:
+        pass
+
+# BS-RoFormer SW 6-stem model (BS-Roformer-SW.ckpt with BS-Roformer-SW.yaml), extracting ['bass', 'drums', 'other', 'vocals', 'guitar', 'piano']
+PIANO_SEPARATOR_MODEL = os.environ.get("KEYFLOW_SEPARATOR_MODEL", "BS-Roformer-SW.ckpt")
+STEM_PREP_MODE = os.environ.get("KEYFLOW_STEM_PREP", "minimal")
+
+MODEL_CACHE_DIR = Path("/tmp/audio-separator-models")
+_separator_lock = threading.Lock()
 
 BYTEDANCE_CHECKPOINT_URL = (
     "https://zenodo.org/record/4034264/files/"
@@ -134,9 +166,9 @@ def ensure_bytedance_checkpoint() -> Path:
         return BYTEDANCE_CHECKPOINT_PATH
 
 
-def clean_isolated_piano_audio(stem_wav_path: Path, work_dir: Path) -> Path:
+def _legacy_clean_isolated_piano_audio(stem_wav_path: Path, work_dir: Path) -> Path:
     """
-    Applies post-Demucs harmonic and piano-range filtering:
+    Legacy post-Demucs harmonic and piano-range filtering:
     1. Loads audio at ByteDance sample rate (16 kHz mono).
     2. Strips residual drum/percussive transients via HPSS (margin 1.0 harm vs 2.2 perc).
     3. Bandpasses to piano fundamental range (27.5 Hz A0 to 4400 Hz C8).
@@ -183,46 +215,177 @@ def clean_isolated_piano_audio(stem_wav_path: Path, work_dir: Path) -> Path:
     return stem_wav_path
 
 
-def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Path:
+def prepare_stem_for_transcription(stem_path: Path, work_dir: Path, mode: str | None = None) -> Path:
     """
-    Isolates dedicated piano stem using 6-stem HT-Demucs (`htdemucs_6s --two-stems=piano`).
-    Falls back to 4-stem `htdemucs --two-stems=other` and Librosa HPSS if unavailable.
-    Cleans output stem with harmonic HPSS and piano-range bandpass filtering.
+    Prepares an isolated piano stem for neural transcription:
+    - Minimal mode (default):
+      1. Loads audio preserving native sample rate (sr=None, mono=True).
+      2. Applies a gentle 20 Hz high-pass filter (2nd order Butterworth) to remove DC/rumble.
+      3. Peak-normalizes to 0.95.
+      4. Saves as piano_prepared.wav (float32).
+      No HPSS, no low-pass, no bandpass so transients and high harmonics remain intact.
+    - Legacy mode (mode="legacy" or KEYFLOW_STEM_PREP="legacy"):
+      Delegates to _legacy_clean_isolated_piano_audio.
     """
+    current_mode = mode or STEM_PREP_MODE
+    if current_mode == "legacy":
+        return _legacy_clean_isolated_piano_audio(stem_path, work_dir)
+
+    if not HAS_LIBROSA:
+        return stem_path
+
+    try:
+        y, sr = librosa.load(str(stem_path), sr=None, mono=True)
+        if y.size == 0 or np.max(np.abs(y)) < 1e-6:
+            return stem_path
+
+        # Gentle high-pass at ~20 Hz to remove DC/sub-bass rumble
+        y_filtered = y
+        if HAS_SCIPY_SIGNAL and sr is not None and sr > 40:
+            try:
+                nyq = 0.5 * sr
+                low = 20.0 / nyq
+                if 0 < low < 1:
+                    sos = butter(2, low, btype="highpass", output="sos")
+                    y_filtered = sosfiltfilt(sos, y)
+            except Exception as f_err:
+                print(f"[KeyFlow Space] Highpass filter skipped: {f_err}")
+                y_filtered = y
+
+        # Peak normalization to 0.95
+        peak = float(np.max(np.abs(y_filtered)))
+        if peak > 1e-6:
+            y_norm = y_filtered * (0.95 / peak)
+        else:
+            y_norm = y_filtered
+
+        prepared_path = work_dir / "piano_prepared.wav"
+        sf.write(str(prepared_path), y_norm.astype(np.float32), sr)
+        if prepared_path.exists() and prepared_path.stat().st_size > 1000:
+            return prepared_path
+    except Exception as exc:
+        print(f"[KeyFlow Space] Stem preparation error: {exc}")
+
+    return stem_path
+
+
+def isolate_piano_with_roformer(input_audio_path: Path, work_dir: Path) -> Path | None:
+    """Isolates dedicated piano stem using BS-RoFormer 6-stem model via audio-separator."""
+    if not HAS_AUDIO_SEPARATOR:
+        return None
+    try:
+        sep_out = work_dir / "sep_out"
+        sep_out.mkdir(parents=True, exist_ok=True)
+        MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+        with _separator_lock:
+            separator = Separator(
+                output_dir=str(sep_out),
+                model_file_dir=str(MODEL_CACHE_DIR),
+                output_format="WAV",
+            )
+            # On ZeroGPU, load_model must execute inside the active GPU context:
+            separator.load_model(model_filename=PIANO_SEPARATOR_MODEL)
+
+            separator.output_dir = str(sep_out)
+            mi = getattr(separator, "model_instance", None)
+            if mi is not None and hasattr(mi, "output_dir"):
+                mi.output_dir = str(sep_out)
+
+            output_files = separator.separate(str(input_audio_path))
+
+        if not output_files:
+            return None
+
+        for fname in output_files:
+            candidate = Path(fname)
+            resolved_path = None
+            if candidate.is_absolute() and candidate.exists():
+                resolved_path = candidate
+            elif (sep_out / fname).exists():
+                resolved_path = sep_out / fname
+            elif (Path(separator.output_dir) / fname).exists():
+                resolved_path = Path(separator.output_dir) / fname
+
+            if resolved_path and "piano" in resolved_path.name.lower() and resolved_path.stat().st_size > 1000:
+                return resolved_path
+    except Exception as exc:
+        print(f"[KeyFlow Space] BS-RoFormer isolation error: {exc}")
+        return None
+    finally:
+        if HAS_TORCH and torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+    return None
+
+
+def isolate_piano_with_htdemucs_6s(input_audio_path: Path, work_dir: Path) -> Path | None:
+    """Runs 6-stem HT-Demucs dedicated piano stem isolation."""
+    if not HAS_DEMUCS:
+        return None
+    device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
+    out_dir = work_dir / "demucs_out"
+    try:
+        cmd_6s = [
+            "demucs",
+            "-n", "htdemucs_6s",
+            "--two-stems", "piano",
+            "-d", device,
+            "-o", str(out_dir),
+            str(input_audio_path),
+        ]
+        subprocess.run(
+            cmd_6s,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=300,
+        )
+        piano_wav = out_dir / "htdemucs_6s" / input_audio_path.stem / "piano.wav"
+        if piano_wav.exists() and piano_wav.stat().st_size > 1000:
+            return piano_wav
+    except Exception as exc:
+        print(f"[KeyFlow Space] htdemucs_6s dedicated piano isolation fallback: {exc}")
+    finally:
+        if HAS_TORCH and torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+    return None
+
+
+def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Tuple[Path, str]:
+    """
+    Separates piano stem using hierarchical fallback chain:
+    1. BS-RoFormer SW 6-stem via audio-separator.
+    2. HT-Demucs 6S dedicated piano stem (demucs -n htdemucs_6s --two-stems piano).
+    3. HT-Demucs 4-stem other stem (demucs -n htdemucs --two-stems other).
+    4. Librosa HPSS harmonic separation with softer margin=(1.0, 1.5).
+    5. Raw input audio fallback.
+
+    Returns (prepared_stem_path, separator_name).
+    """
+    # 1. Primary: BS-RoFormer via audio-separator
+    if HAS_AUDIO_SEPARATOR:
+        try:
+            roformer_stem = isolate_piano_with_roformer(input_audio_path, work_dir)
+            if roformer_stem is not None and roformer_stem.exists():
+                return prepare_stem_for_transcription(roformer_stem, work_dir), "bs-roformer-sw"
+        except Exception as exc:
+            print(f"[KeyFlow Space] BS-RoFormer fallback: {exc}")
+
+    # 2. Secondary: 6-stem dedicated piano model (htdemucs_6s --two-stems piano)
     if HAS_DEMUCS:
+        piano_6s = isolate_piano_with_htdemucs_6s(input_audio_path, work_dir)
+        if piano_6s is not None and piano_6s.exists():
+            return prepare_stem_for_transcription(piano_6s, work_dir), "htdemucs_6s"
+
+        # 3. Tertiary: 4-stem model (htdemucs --two-stems other)
         device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
         out_dir = work_dir / "demucs_out"
-
-        # 1. Primary: 6-stem dedicated piano model (htdemucs_6s --two-stems piano)
-        try:
-            cmd_6s = [
-                "demucs",
-                "-n", "htdemucs_6s",
-                "--two-stems", "piano",
-                "-d", device,
-                "-o", str(out_dir),
-                str(input_audio_path),
-            ]
-            subprocess.run(
-                cmd_6s,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=300,
-            )
-            piano_wav = out_dir / "htdemucs_6s" / input_audio_path.stem / "piano.wav"
-            if piano_wav.exists():
-                return clean_isolated_piano_audio(piano_wav, work_dir)
-        except Exception as exc:
-            print(f"[KeyFlow Space] htdemucs_6s dedicated piano isolation fallback: {exc}")
-        finally:
-            if HAS_TORCH and torch.cuda.is_available():
-                try:
-                    torch.cuda.empty_cache()
-                except Exception:
-                    pass
-
-        # 2. Fallback: 4-stem model (htdemucs --two-stems other)
         try:
             cmd_4s = [
                 "demucs",
@@ -240,8 +403,8 @@ def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Path:
                 timeout=240,
             )
             other_wav = out_dir / "htdemucs" / input_audio_path.stem / "other.wav"
-            if other_wav.exists():
-                return clean_isolated_piano_audio(other_wav, work_dir)
+            if other_wav.exists() and other_wav.stat().st_size > 1000:
+                return prepare_stem_for_transcription(other_wav, work_dir), "htdemucs"
         except Exception as exc:
             print(f"[KeyFlow Space] Demucs 4-stem fallback failed: {exc}")
         finally:
@@ -251,18 +414,48 @@ def isolate_piano_stem(input_audio_path: Path, work_dir: Path) -> Path:
                 except Exception:
                     pass
 
+    # 4. Quaternary: Librosa HPSS crude harmonic separation (softer margin)
     if HAS_LIBROSA:
         try:
             y, sr = librosa.load(str(input_audio_path), sr=22050, mono=True)
-            y_harm, _ = librosa.effects.hpss(y, margin=(1.3, 2.2))
+            y_harm, _ = librosa.effects.hpss(y, margin=(1.0, 1.5))
             harm_path = work_dir / "harmonic_isolated.wav"
             sf.write(str(harm_path), y_harm, sr)
-            if harm_path.exists():
-                return clean_isolated_piano_audio(harm_path, work_dir)
+            if harm_path.exists() and harm_path.stat().st_size > 1000:
+                return prepare_stem_for_transcription(harm_path, work_dir), "librosa-hpss"
         except Exception as exc:
             print(f"[KeyFlow Space] Librosa HPSS fallback skipped: {exc}")
 
-    return input_audio_path
+    return prepare_stem_for_transcription(input_audio_path, work_dir), "none"
+
+
+def transcribe_with_transkun(audio_path: Path, output_midi_path: Path) -> bool:
+    """Transcribes audio into a Standard MIDI file using Transkun."""
+    if not HAS_TRANSKUN or not TRANSKUN_CMD:
+        return False
+    try:
+        device = "cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu"
+        cmd = list(TRANSKUN_CMD) + [str(audio_path), str(output_midi_path), "--device", device]
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            timeout=300,
+        )
+        return output_midi_path.exists() and output_midi_path.stat().st_size > 80
+    except subprocess.CalledProcessError as exc:
+        err_msg = (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else str(exc))[:500]
+        print(f"[KeyFlow Space] Transkun transcription failed: {err_msg}")
+        return False
+    except Exception as exc:
+        print(f"[KeyFlow Space] Transkun transcription error: {str(exc)[:500]}")
+        return False
+    finally:
+        if HAS_TORCH and torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
 
 
 def transcribe_with_bytedance(audio_path: Path, output_midi_path: Path) -> bool:
@@ -463,18 +656,19 @@ def filter_midi_bleed_notes(midi_path: Path, sensitivity: float = 55.0) -> bool:
         return False
 
 
-@spaces.GPU(duration=90)
+@spaces.GPU(duration=180)
 def run_gpu_transcription_pipeline(
     input_path_str: str,
     should_isolate: bool = True,
     sens_val: float = 55.0,
     work_dir_str: str = "",
-) -> str:
+    engine: str = "auto",
+) -> Dict[str, Any]:
     """
     ZeroGPU-decorated transcription pipeline.
-    Runs HT-Demucs 6S dedicated piano stem isolation and ByteDance Piano Transcription on GPU,
+    Runs BS-RoFormer / HT-Demucs 6S dedicated piano stem isolation and Transkun / ByteDance Piano Transcription on GPU,
     followed by harmonic and MIDI bleed filtering (with Librosa CQT fallback),
-    returning the base64-encoded Standard MIDI (.mid) file.
+    returning a dict with {"midi_base64", "separator_used", "transcriber_used"}.
     """
     if not input_path_str:
         raise ValueError("Missing input audio path.")
@@ -489,43 +683,83 @@ def run_gpu_transcription_pipeline(
         except Exception:
             safe_work_dir = None
 
-    if safe_work_dir is not None:
-        target_audio = isolate_piano_stem(input_path, safe_work_dir) if should_isolate else input_path
-        output_midi = safe_work_dir / "transcribed.mid"
+    def _execute(work_dir: Path) -> Dict[str, Any]:
+        t_sep_start = time.perf_counter()
+        if should_isolate:
+            target_audio, separator_used = isolate_piano_stem(input_path, work_dir)
+        else:
+            target_audio, separator_used = input_path, "none"
+        t_sep_end = time.perf_counter()
+        sep_s = round(t_sep_end - t_sep_start, 2)
 
-        ok = transcribe_with_bytedance(target_audio, output_midi)
-        if ok:
+        output_midi = work_dir / "transcribed.mid"
+        transcriber_used = None
+        req_engine = (engine or "auto").strip().lower()
+
+        t_trans_start = time.perf_counter()
+        if req_engine == "bytedance":
+            if transcribe_with_bytedance(target_audio, output_midi):
+                transcriber_used = "bytedance"
+            elif transcribe_with_transkun(target_audio, output_midi):
+                transcriber_used = "transkun"
+        elif req_engine == "transkun":
+            if transcribe_with_transkun(target_audio, output_midi):
+                transcriber_used = "transkun"
+            elif transcribe_with_bytedance(target_audio, output_midi):
+                transcriber_used = "bytedance"
+        else:  # "auto" or any fallback
+            if transcribe_with_transkun(target_audio, output_midi):
+                transcriber_used = "transkun"
+            elif transcribe_with_bytedance(target_audio, output_midi):
+                transcriber_used = "bytedance"
+
+        if transcriber_used is not None:
             filter_midi_bleed_notes(output_midi, float(sens_val))
         else:
-            ok = transcribe_with_librosa_cqt_to_midi(target_audio, output_midi, float(sens_val))
+            if transcribe_with_librosa_cqt_to_midi(target_audio, output_midi, float(sens_val)):
+                transcriber_used = "librosa-cqt"
+        t_trans_end = time.perf_counter()
+        trans_s = round(t_trans_end - t_trans_start, 2)
 
-        if not ok or not output_midi.exists():
+        print(f"[KeyFlow Space] separation={separator_used} {sep_s:.1f}s | transcription={transcriber_used} {trans_s:.1f}s")
+
+        if not transcriber_used or not output_midi.exists() or output_midi.stat().st_size <= 80:
             raise RuntimeError("Could not transcribe piano notes from audio file.")
 
-        return base64.b64encode(output_midi.read_bytes()).decode("ascii")
+        return {
+            "midi_base64": base64.b64encode(output_midi.read_bytes()).decode("ascii"),
+            "separator_used": separator_used,
+            "transcriber_used": transcriber_used,
+            "timings": {
+                "separation_s": sep_s,
+                "transcription_s": trans_s,
+            },
+        }
+
+    if safe_work_dir is not None:
+        return _execute(safe_work_dir)
 
     os.makedirs("/tmp", exist_ok=True)
     with tempfile.TemporaryDirectory(dir="/tmp", prefix="keyflow_zerogpu_") as tmp_dir:
-        work_dir = Path(tmp_dir)
-        target_audio = isolate_piano_stem(input_path, work_dir) if should_isolate else input_path
-        output_midi = work_dir / "transcribed.mid"
-
-        ok = transcribe_with_bytedance(target_audio, output_midi)
-        if ok:
-            filter_midi_bleed_notes(output_midi, float(sens_val))
-        else:
-            ok = transcribe_with_librosa_cqt_to_midi(target_audio, output_midi, float(sens_val))
-
-        if not ok or not output_midi.exists():
-            raise RuntimeError("Could not transcribe piano notes from audio file.")
-
-        return base64.b64encode(output_midi.read_bytes()).decode("ascii")
+        return _execute(Path(tmp_dir))
 
 
 async def health_check_handler() -> Dict[str, Any]:
+    engines = []
+    if HAS_AUDIO_SEPARATOR:
+        engines.append("BS-RoFormer")
+    if HAS_DEMUCS:
+        engines.append("HT-Demucs 6S")
+    if HAS_TRANSKUN:
+        engines.append("Transkun")
+    if HAS_BYTEDANCE:
+        engines.append("ByteDance Piano AI")
+    if HAS_LIBROSA:
+        engines.append("Librosa-CQT")
+    engines.append("Sheet-OMR")
     return {
         "status": "ok",
-        "engines": ["HT-Demucs 6S", "ByteDance Piano AI", "Sheet-OMR"],
+        "engines": engines,
     }
 
 
@@ -533,6 +767,7 @@ async def transcribe_endpoint_handler(
     file: UploadFile = File(...),
     isolate_piano: str = Form("true"),
     sensitivity: str = Form("55"),
+    engine: str = Form("auto"),
 ) -> Dict[str, Any]:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing audio filename.")
@@ -553,7 +788,7 @@ async def transcribe_endpoint_handler(
     if len(raw_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Audio file exceeds 50 MB limit.")
 
-    def _sync_transcribe() -> str:
+    def _sync_transcribe() -> Dict[str, Any]:
         os.makedirs("/tmp", exist_ok=True)
         with tempfile.TemporaryDirectory(dir="/tmp", prefix="keyflow_space_") as tmp_dir:
             work_dir = Path(tmp_dir)
@@ -564,18 +799,22 @@ async def transcribe_endpoint_handler(
                 should_isolate=should_isolate,
                 sens_val=sens_val,
                 work_dir_str=str(work_dir),
+                engine=engine,
             )
 
     try:
-        b64_str = await run_in_threadpool(_sync_transcribe)
+        pipeline_res = await run_in_threadpool(_sync_transcribe)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
     return {
-        "midi_base64": b64_str,
+        "midi_base64": pipeline_res["midi_base64"],
         "title": clean_title,
+        "separator_used": pipeline_res.get("separator_used", "none"),
+        "transcriber_used": pipeline_res.get("transcriber_used", "none"),
+        "timings": pipeline_res.get("timings", {"separation_s": 0.0, "transcription_s": 0.0}),
     }
 
 
@@ -935,11 +1174,11 @@ with gr.Blocks(title="KeyFlow AI Audio & Sheet Music Server") as demo:
     gr.Markdown(
         """
         # 🎹 KeyFlow AI Audio & Sheet Music Server (ZeroGPU Online)
-        This Hugging Face Gradio Space powers **Phase 3 AI Audio-to-MIDI Transcription** (`HT-Demucs 6S` + `ByteDance Piano AI`) and **Phase 5 Sheet Music Optical Music Recognition (OMR)** on **ZeroGPU** for the **KeyFlow Virtual Piano** iPad web app.
+        This Hugging Face Gradio Space powers **Phase 3 AI Audio-to-MIDI Transcription** (`BS-RoFormer` + `Transkun` / `ByteDance Piano AI`) and **Phase 5 Sheet Music Optical Music Recognition (OMR)** on **ZeroGPU** for the **KeyFlow Virtual Piano** iPad web app.
 
         ### Active API Endpoints
-        - **`GET /health`** — Returns server health & active engines (`HT-Demucs 6S`, `ByteDance Piano AI`, `Sheet-OMR`).
-        - **`POST /api/transcribe`** — Accepts `file`, `isolate_piano`, and `sensitivity` (`multipart/form-data`) and returns `{"midi_base64": "...", "title": "..."}`.
+        - **`GET /health`** — Returns server health & active engines (`BS-RoFormer`, `HT-Demucs 6S`, `Transkun`, `ByteDance Piano AI`, `Sheet-OMR`).
+        - **`POST /api/transcribe`** — Accepts `file`, `isolate_piano`, `sensitivity`, and optional `engine` (`multipart/form-data`) and returns `{"midi_base64": "...", "title": "...", "separator_used": "...", "transcriber_used": "..."}`.
         - **`POST /api/omr`** — Accepts sheet music (`.pdf`, `.png`, `.jpg`, `.musicxml`, `.mxl`) and returns `{"musicxml": "..."}` or `{"midi_base64": "..."}`.
 
         **How to connect from KeyFlow:** Copy this Space's public `.hf.space` URL (e.g. `https://<username>-<space-name>.hf.space`) into the **AI Server URL** field inside KeyFlow's **AI Audio** or **Sheet Music** modal and tap **Check**.
@@ -947,17 +1186,19 @@ with gr.Blocks(title="KeyFlow AI Audio & Sheet Music Server") as demo:
     )
     with gr.Row():
         audio_in = gr.Audio(type="filepath", label="Audio File (.mp3, .wav, .m4a)")
-        isolate_in = gr.Checkbox(value=True, label="Isolate Piano Stem (HT-Demucs 6S)")
+        isolate_in = gr.Checkbox(value=True, label="Isolate Piano Stem (BS-RoFormer)")
         sens_in = gr.Slider(minimum=15, maximum=85, value=55, step=1, label="Sensitivity (%)")
     transcribe_btn = gr.Button("Transcribe Audio to MIDI (Base64)")
     midi_b64_out = gr.Textbox(label="Base64 Standard MIDI Output")
 
     def _gradio_transcribe(audio_file, isolate_piano, sensitivity):
-        return run_gpu_transcription_pipeline(
+        pipeline_res = run_gpu_transcription_pipeline(
             audio_file,
             should_isolate=isolate_piano,
             sens_val=sensitivity,
+            engine="auto",
         )
+        return pipeline_res["midi_base64"]
 
     transcribe_btn.click(
         fn=_gradio_transcribe,
