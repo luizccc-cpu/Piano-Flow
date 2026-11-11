@@ -48,6 +48,8 @@ This Python backend powers **Studio AI Dedicated Piano Stem Separation (`BS-RoFo
 
 - `KEYFLOW_STEM_PREP`: Stem preparation mode (`minimal` [default] or `legacy`).
 - `KEYFLOW_SEPARATOR_MODEL`: Checkpoint filename for `audio-separator` BS-RoFormer (default: `BS-Roformer-SW.ckpt`).
+- `KEYFLOW_SEPARATOR_OVERLAP`: Override the segment overlap count for MDXC/BS-RoFormer separation in `audio-separator`. Lower values are faster with slightly more seam artifacts; `2` is a reasonable speed setting (library default is typically `8`).
+- `KEYFLOW_TRANSKUN_MIN_VEL`: Optional integer override for the Transkun velocity gate threshold in `filter_midi_bleed_notes` (defaults to sensitivity-mapped range 24..10).
 
 ---
 

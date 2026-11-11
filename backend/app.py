@@ -24,7 +24,9 @@ except ImportError:
     spaces = _SpacesFallback()
 
 import base64
+import importlib.metadata
 import importlib.util
+import inspect
 import io
 import os
 import re
@@ -132,9 +134,80 @@ else:
 # BS-RoFormer SW 6-stem model (BS-Roformer-SW.ckpt with BS-Roformer-SW.yaml), extracting ['bass', 'drums', 'other', 'vocals', 'guitar', 'piano']
 PIANO_SEPARATOR_MODEL = os.environ.get("KEYFLOW_SEPARATOR_MODEL", "BS-Roformer-SW.ckpt")
 STEM_PREP_MODE = os.environ.get("KEYFLOW_STEM_PREP", "minimal")
+SEPARATOR_OVERLAP = os.environ.get("KEYFLOW_SEPARATOR_OVERLAP", "")
 
 MODEL_CACHE_DIR = Path("/tmp/audio-separator-models")
 _separator_lock = threading.Lock()
+
+
+def _get_separator_mdxc_params() -> Optional[Dict[str, Any]]:
+    """
+    Inspects Separator.__init__ signature and returns merged mdxc_params if KEYFLOW_SEPARATOR_OVERLAP
+    is a valid integer >= 1. Otherwise returns None so library default applies.
+    """
+    if not SEPARATOR_OVERLAP:
+        return None
+    try:
+        overlap_val = int(SEPARATOR_OVERLAP)
+        if overlap_val < 1:
+            return None
+    except ValueError:
+        return None
+
+    try:
+        if not HAS_AUDIO_SEPARATOR:
+            return None
+        sig = inspect.signature(Separator.__init__)
+        if "mdxc_params" not in sig.parameters:
+            print("[KeyFlow Space] WARNING: 'mdxc_params' parameter not found in Separator.__init__ signature, skipping overlap override.")
+            return None
+        default_val = sig.parameters["mdxc_params"].default
+        if isinstance(default_val, dict):
+            params = dict(default_val)
+        else:
+            params = {}
+        params["overlap"] = overlap_val
+        return params
+    except Exception as exc:
+        print(f"[KeyFlow Space] WARNING: Failed to inspect Separator.__init__ signature ({exc}), skipping overlap override.")
+        return None
+
+
+def _prefetch_separator_model_worker() -> None:
+    """
+    Background worker to download BS-RoFormer model weights outside @spaces.GPU duration.
+    ZeroGPU charges from the moment the GPU function starts; pre-downloading weights saves GPU quota.
+    Uses Separator.download_model_files (pure HTTP download without CUDA initialization).
+    """
+    if not HAS_AUDIO_SEPARATOR:
+        return
+    try:
+        MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        target_ckpt = MODEL_CACHE_DIR / PIANO_SEPARATOR_MODEL
+        if target_ckpt.exists():
+            return
+
+        sep = Separator(model_file_dir=str(MODEL_CACHE_DIR))
+        if hasattr(sep, "download_model_files"):
+            print(f"[KeyFlow Space] Prefetching separator model '{PIANO_SEPARATOR_MODEL}' via download_model_files...")
+            sep.download_model_files(PIANO_SEPARATOR_MODEL)
+            print(f"[KeyFlow Space] Separator model '{PIANO_SEPARATOR_MODEL}' prefetched successfully.")
+        else:
+            # Note: We verified against audio-separator 0.48.0 source:
+            # Separator.download_model_files handles HTTP fetching and SHA-256 verification.
+            # If download_model_files is absent, calling load_model() directly on CPU risks
+            # initializing CUDA providers in PyTorch/ONNX, which raises RuntimeError on ZeroGPU
+            # when outside an active @spaces.GPU context. Therefore, we do not call load_model.
+            print(f"[KeyFlow Space] Separator.download_model_files not found; skipping CPU prefetch to avoid CUDA initialization outside @spaces.GPU.")
+    except Exception as exc:
+        print(f"[KeyFlow Space] Separator model prefetch warning (non-fatal): {exc}")
+
+
+if HAS_AUDIO_SEPARATOR:
+    try:
+        threading.Thread(target=_prefetch_separator_model_worker, daemon=True, name="prefetch_separator").start()
+    except Exception as t_exc:
+        print(f"[KeyFlow Space] Failed to start separator prefetch thread: {t_exc}")
 
 BYTEDANCE_CHECKPOINT_URL = (
     "https://zenodo.org/record/4034264/files/"
@@ -279,13 +352,28 @@ def isolate_piano_with_roformer(input_audio_path: Path, work_dir: Path) -> Path 
         MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
         with _separator_lock:
-            separator = Separator(
-                output_dir=str(sep_out),
-                model_file_dir=str(MODEL_CACHE_DIR),
-                output_format="WAV",
-            )
+            sep_kwargs: Dict[str, Any] = {
+                "output_dir": str(sep_out),
+                "model_file_dir": str(MODEL_CACHE_DIR),
+                "output_format": "WAV",
+            }
+            mdxc_ov = _get_separator_mdxc_params()
+            if mdxc_ov is not None:
+                sep_kwargs["mdxc_params"] = mdxc_ov
+
+            separator = Separator(**sep_kwargs)
             # On ZeroGPU, load_model must execute inside the active GPU context:
-            separator.load_model(model_filename=PIANO_SEPARATOR_MODEL)
+            try:
+                separator.load_model(model_filename=PIANO_SEPARATOR_MODEL)
+            except Exception as lm_exc:
+                if "not found in supported model files" in str(lm_exc).lower():
+                    try:
+                        as_ver = importlib.metadata.version("audio-separator")
+                    except Exception:
+                        as_ver = "unknown"
+                    print(f"[KeyFlow Space] ERROR: separator model '{PIANO_SEPARATOR_MODEL}' not available in audio-separator {as_ver} — upgrade to >=0.48.0. Falling back to htdemucs_6s.")
+                    return None
+                raise
 
             separator.output_dir = str(sep_out)
             mi = getattr(separator, "model_instance", None)
@@ -599,11 +687,17 @@ def transcribe_with_librosa_cqt_to_midi(audio_path: Path, output_midi_path: Path
     return output_midi_path.exists()
 
 
-def filter_midi_bleed_notes(midi_path: Path, sensitivity: float = 55.0) -> bool:
+def filter_midi_bleed_notes(
+    midi_path: Path,
+    sensitivity: float = 55.0,
+    transcriber: str = "bytedance",
+) -> bool:
     """
-    Post-filters low-velocity bleed and micro-glitches from ByteDance transcription:
+    Post-filters low-velocity bleed and micro-glitches from neural transcription:
     1. Removes notes outside 88-key piano range (MIDI 21..108).
-    2. Velocity gate mapped from sensitivity (15..85 -> min_vel 38..20; default 55 -> 28).
+    2. Velocity gate mapped from sensitivity:
+       - ByteDance: 15..85 -> min_vel 38..20 (default 55 -> 28).
+       - Transkun: 15..85 -> min_vel 24..10 (default 55 -> 16), overridable via KEYFLOW_TRANSKUN_MIN_VEL.
     3. Removes sub-55ms micro-glitches (duration < 0.055s).
     4. Caps simultaneous note onsets within any 30ms window to 8 notes (keeping highest velocity).
     """
@@ -612,8 +706,20 @@ def filter_midi_bleed_notes(midi_path: Path, sensitivity: float = 55.0) -> bool:
     try:
         pm = pretty_midi.PrettyMIDI(str(midi_path))
         sens_clamped = float(np.clip(sensitivity, 15.0, 85.0))
-        min_vel = int(round(38.0 - ((sens_clamped - 15.0) / 70.0) * 18.0))
-        min_vel = max(15, min(45, min_vel))
+        t_name = (transcriber or "bytedance").strip().lower()
+
+        if t_name == "transkun":
+            min_vel = int(round(24.0 - ((sens_clamped - 15.0) / 70.0) * 14.0))
+            min_vel = max(1, min(45, min_vel))
+            env_override = os.environ.get("KEYFLOW_TRANSKUN_MIN_VEL", "").strip()
+            if env_override:
+                try:
+                    min_vel = int(env_override)
+                except ValueError:
+                    pass
+        else:
+            min_vel = int(round(38.0 - ((sens_clamped - 15.0) / 70.0) * 18.0))
+            min_vel = max(15, min(45, min_vel))
 
         total_kept = 0
         for inst in pm.instruments:
@@ -714,7 +820,7 @@ def run_gpu_transcription_pipeline(
                 transcriber_used = "bytedance"
 
         if transcriber_used is not None:
-            filter_midi_bleed_notes(output_midi, float(sens_val))
+            filter_midi_bleed_notes(output_midi, float(sens_val), transcriber=transcriber_used)
         else:
             if transcribe_with_librosa_cqt_to_midi(target_audio, output_midi, float(sens_val)):
                 transcriber_used = "librosa-cqt"
@@ -746,8 +852,16 @@ def run_gpu_transcription_pipeline(
 
 async def health_check_handler() -> Dict[str, Any]:
     engines = []
+    as_ver = None
     if HAS_AUDIO_SEPARATOR:
         engines.append("BS-RoFormer")
+        try:
+            as_ver = importlib.metadata.version("audio-separator")
+        except Exception:
+            try:
+                as_ver = importlib.metadata.version("audio_separator")
+            except Exception:
+                as_ver = "installed"
     if HAS_DEMUCS:
         engines.append("HT-Demucs 6S")
     if HAS_TRANSKUN:
@@ -760,6 +874,7 @@ async def health_check_handler() -> Dict[str, Any]:
     return {
         "status": "ok",
         "engines": engines,
+        "audio_separator_version": as_ver,
     }
 
 

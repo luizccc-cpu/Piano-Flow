@@ -5,13 +5,15 @@ fastapi
 uvicorn[standard]
 python-multipart
 gradio
-numpy<2.0.0
+# Note: numpy<2.0.0 caused pip to resolve audio-separator 0.30.2, which lacks BS-Roformer-SW.ckpt.
+# numpy>=2.0 allows audio-separator[gpu]>=0.48.0 where all models (BS-RoFormer, Transkun, Demucs, ByteDance) work.
+numpy>=2.0
 scipy
 librosa
 soundfile
 resampy
 pretty_midi
-audio-separator[gpu]
+audio-separator[gpu]>=0.48.0
 demucs
 transkun
 piano_transcription_inference
