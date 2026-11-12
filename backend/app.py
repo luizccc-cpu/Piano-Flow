@@ -39,7 +39,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB limit
 ALLOWED_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".webm", ".mp4"}
