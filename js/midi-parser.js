@@ -325,8 +325,8 @@
           finalNotes.push({
             midi: n.midi,
             name: global.midiToName(n.midi),
-            time: t0 + 0.8,
-            duration: Math.max(0.12, t1 - t0),
+            time: Math.round((t0 + 0.8) * 1000) / 1000,
+            duration: Math.max(0.055, Math.round((t1 - t0) * 1000) / 1000),
             hand,
             velocity: n.velocity || 0.78
           });
@@ -340,8 +340,8 @@
           finalNotes.push({
             midi: n.midi,
             name: global.midiToName(n.midi),
-            time: t0 + 0.8,
-            duration: Math.max(0.12, t1 - t0),
+            time: Math.round((t0 + 0.8) * 1000) / 1000,
+            duration: Math.max(0.055, Math.round((t1 - t0) * 1000) / 1000),
             hand: 'R',
             velocity: n.velocity || 0.78
           });
