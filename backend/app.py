@@ -127,7 +127,7 @@ def _installed_versions() -> Dict[str, Any]:
     """Returns installed distribution versions (None if not installed), independent of import success."""
     out: Dict[str, Any] = {"python": sys.version.split()[0]}
     for dist in ("numpy", "torch", "torchaudio", "audio-separator", "onnxruntime-gpu",
-                 "onnxruntime", "transkun", "demucs", "piano_transcription_inference", "librosa"):
+                 "onnxruntime", "transkun", "demucs", "piano_transcription_inference", "librosa", "audioread"):
         try:
             out[dist] = importlib.metadata.version(dist)
         except Exception:

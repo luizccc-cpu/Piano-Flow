@@ -54,47 +54,69 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 
+# Records import failures so /health can report the real reason an engine is unavailable.
+IMPORT_ERRORS: Dict[str, str] = {}
+
 try:
     from audio_separator.separator import Separator
     HAS_AUDIO_SEPARATOR = True
-except Exception:
+except Exception as _exc:
     HAS_AUDIO_SEPARATOR = False
+    IMPORT_ERRORS["audio_separator"] = f"{type(_exc).__name__}: {_exc}"[:500]
 
 try:
     import torch
     HAS_TORCH = True
-except ImportError:
+except Exception as _exc:
     HAS_TORCH = False
+    IMPORT_ERRORS["torch"] = f"{type(_exc).__name__}: {_exc}"[:500]
 
 try:
     import soundfile as sf
     HAS_SOUNDFILE = True
-except ImportError:
+except Exception:
     HAS_SOUNDFILE = False
 
 try:
     from scipy.signal import butter, sosfiltfilt
     HAS_SCIPY_SIGNAL = True
-except ImportError:
+except Exception:
     HAS_SCIPY_SIGNAL = False
 
 try:
     import librosa
     HAS_LIBROSA = True
-except ImportError:
+except Exception:
     HAS_LIBROSA = False
 
 try:
     import pretty_midi
     HAS_PRETTY_MIDI = True
-except ImportError:
+except Exception:
     HAS_PRETTY_MIDI = False
 
 try:
     from piano_transcription_inference import PianoTranscription, sample_rate as BD_SAMPLE_RATE
     HAS_BYTEDANCE = True
-except ImportError:
+except Exception as _exc:
     HAS_BYTEDANCE = False
+    BD_SAMPLE_RATE = 16000
+    IMPORT_ERRORS["piano_transcription_inference"] = f"{type(_exc).__name__}: {_exc}"[:500]
+
+for _name, _msg in IMPORT_ERRORS.items():
+    print(f"[KeyFlow Backend] Import failed for {_name}: {_msg}")
+
+
+def _installed_versions() -> Dict[str, Any]:
+    """Returns installed distribution versions (None if not installed), independent of import success."""
+    out: Dict[str, Any] = {"python": sys.version.split()[0]}
+    for dist in ("numpy", "torch", "torchaudio", "audio-separator", "onnxruntime-gpu",
+                 "onnxruntime", "transkun", "demucs", "piano_transcription_inference", "librosa", "audioread"):
+        try:
+            out[dist] = importlib.metadata.version(dist)
+        except Exception:
+            out[dist] = None
+    return out
 
 try:
     from basic_pitch.inference import predict as basic_pitch_predict
@@ -275,6 +297,8 @@ async def health_check() -> Dict[str, Any]:
         "librosa_available": HAS_LIBROSA,
         "pdfium_available": HAS_PDFIUM,
         "omr_available": HAS_PIL and HAS_PRETTY_MIDI and HAS_NDI,
+        "import_errors": IMPORT_ERRORS,
+        "installed_versions": _installed_versions(),
     }
 
 

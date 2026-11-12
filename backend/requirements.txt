@@ -9,7 +9,9 @@ gradio
 # numpy>=2.0 allows audio-separator[gpu]>=0.48.0 where all models (BS-RoFormer, Transkun, Demucs, ByteDance) work.
 numpy>=2.0
 scipy
-librosa
+# librosa 1.0.0 removed audioread from its dependencies, breaking audio-separator and piano_transcription_inference imports.
+librosa>=0.10.2,<1.0.0
+audioread
 soundfile
 resampy
 pretty_midi
