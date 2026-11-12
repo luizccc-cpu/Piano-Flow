@@ -94,24 +94,45 @@ try:
 except Exception:
     HAS_PRETTY_MIDI = False
 
+# Records import failures so /health can report the real reason an engine is unavailable.
+IMPORT_ERRORS: Dict[str, str] = {}
+
 try:
     import torch
     HAS_TORCH = True
-except Exception:
+except Exception as _exc:
     HAS_TORCH = False
+    IMPORT_ERRORS["torch"] = f"{type(_exc).__name__}: {_exc}"[:500]
 
 try:
     from piano_transcription_inference import PianoTranscription, sample_rate as BD_SAMPLE_RATE
     HAS_BYTEDANCE = True
-except Exception:
+except Exception as _exc:
     HAS_BYTEDANCE = False
     BD_SAMPLE_RATE = 16000
+    IMPORT_ERRORS["piano_transcription_inference"] = f"{type(_exc).__name__}: {_exc}"[:500]
 
 try:
     from audio_separator.separator import Separator
     HAS_AUDIO_SEPARATOR = True
-except Exception:
+except Exception as _exc:
     HAS_AUDIO_SEPARATOR = False
+    IMPORT_ERRORS["audio_separator"] = f"{type(_exc).__name__}: {_exc}"[:500]
+
+for _name, _msg in IMPORT_ERRORS.items():
+    print(f"[KeyFlow Space] Import failed for {_name}: {_msg}")
+
+
+def _installed_versions() -> Dict[str, Any]:
+    """Returns installed distribution versions (None if not installed), independent of import success."""
+    out: Dict[str, Any] = {"python": sys.version.split()[0]}
+    for dist in ("numpy", "torch", "torchaudio", "audio-separator", "onnxruntime-gpu",
+                 "onnxruntime", "transkun", "demucs", "piano_transcription_inference", "librosa"):
+        try:
+            out[dist] = importlib.metadata.version(dist)
+        except Exception:
+            out[dist] = None
+    return out
 
 HAS_DEMUCS = shutil.which("demucs") is not None
 
@@ -875,6 +896,8 @@ async def health_check_handler() -> Dict[str, Any]:
         "status": "ok",
         "engines": engines,
         "audio_separator_version": as_ver,
+        "import_errors": IMPORT_ERRORS,
+        "installed_versions": _installed_versions(),
     }
 
 
