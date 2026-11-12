@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="KeyFlow" />
   <title>KeyFlow — 5-Second Horizon Virtual Piano</title>
   <link rel="manifest" href="manifest.json" />
-  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="stylesheet" href="css/styles.css?v=4.2" />
 </head>
 <body>
   <div id="appShell">
@@ -48,7 +48,7 @@
           </div>
 
           <div class="home-actions-group">
-            <button id="homeAddSongBtn" type="button" class="ui-btn ui-btn-emerald" title="Add a song from Sheet Music, .MID file, or MP3 file">
+            <button id="homeAddSongBtn" type="button" class="ui-btn ui-btn-emerald" title="Add a song from Sheet Music, .MID file, or MP3 file" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.add('open');m.setAttribute('aria-hidden','false');}">
               <span>+ Add Song</span>
             </button>
             <button id="exportLibraryBtn" type="button" class="ui-btn" title="Export all custom and edited songs as a single .keyflow.json backup file">⬇ Backup Library</button>
@@ -434,23 +434,23 @@
     </footer>
 
     <!-- ==================== UNIFIED ADD SONG CHOOSER MODAL ==================== -->
-    <div id="addSongModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="addSongModalTitle">
+    <div id="addSongModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="addSongModalTitle" onclick="if(event.target===this){this.classList.remove('open');this.setAttribute('aria-hidden','true');}">
       <div class="modal-card add-song-modal-card">
         <div class="modal-header">
           <div class="modal-title-group">
             <h2 id="addSongModalTitle" class="modal-title">Add Song</h2>
           </div>
-          <button id="closeAddSongModalBtn" type="button" class="ui-btn icon-btn" title="Close" aria-label="Close Modal">&times;</button>
+          <button id="closeAddSongModalBtn" type="button" class="ui-btn icon-btn" title="Close" aria-label="Close Modal" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">&times;</button>
         </div>
 
         <div class="modal-body add-song-choice-list">
-          <button id="homeOpenSheetModalBtn" type="button" class="ui-btn ui-btn-amber add-song-choice-btn" title="Import Sheet Music (.MusicXML, .MXL, .PDF, .PNG, .JPG)">
+          <button id="homeOpenSheetModalBtn" type="button" class="ui-btn ui-btn-amber add-song-choice-btn" title="Import Sheet Music (.MusicXML, .MXL, .PDF, .PNG, .JPG)" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">
             <span>Add Sheet Music</span>
           </button>
-          <label for="midiInput" id="homeOpenMidiBtn" class="ui-btn ui-btn-accent add-song-choice-btn" title="Upload a Standard .MID or .MIDI file">
+          <label for="midiInput" id="homeOpenMidiBtn" class="ui-btn ui-btn-accent add-song-choice-btn" title="Upload a Standard .MID or .MIDI file" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">
             <span>Add .MID File</span>
           </label>
-          <button id="homeOpenAiModalBtn" type="button" class="ui-btn ui-btn-emerald add-song-choice-btn" title="Convert an MP3, WAV, M4A, or OGG song into piano notes">
+          <button id="homeOpenAiModalBtn" type="button" class="ui-btn ui-btn-emerald add-song-choice-btn" title="Convert an MP3, WAV, M4A, or OGG song into piano notes" onclick="var m=document.getElementById('addSongModal');if(m){m.classList.remove('open');m.setAttribute('aria-hidden','true');}">
             <span>Add MP3 File</span>
           </button>
         </div>
@@ -610,11 +610,11 @@
   </div>
 
   <!-- Modular Application Scripts (Zero Build Step Required) -->
-  <script src="js/songs.js"></script>
-  <script src="js/midi-parser.js"></script>
-  <script src="js/audio-transcriber.js"></script>
-  <script src="js/audio.js"></script>
-  <script src="js/sheet-music-importer.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/songs.js?v=4.2"></script>
+  <script src="js/midi-parser.js?v=4.2"></script>
+  <script src="js/audio-transcriber.js?v=4.2"></script>
+  <script src="js/audio.js?v=4.2"></script>
+  <script src="js/sheet-music-importer.js?v=4.2"></script>
+  <script src="js/app.js?v=4.2"></script>
 </body>
 </html>
