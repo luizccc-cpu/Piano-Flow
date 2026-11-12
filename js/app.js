@@ -104,6 +104,7 @@
     // Phase 4A: Interactive Visual Note Editor State
     editorTool: 'select', // 'select' | 'group' | 'add' | 'delete'
     editorSnapBeats: 0.25, // 0 | 0.25 | 0.125 | 0.0625
+    showSuspectNotes: true,
     selectedNoteIndex: -1,
     selectedNoteIndices: new Set(),
     groupDragBox: null,
@@ -549,6 +550,35 @@
           : (n.hand === 'L' ? 'rgba(186, 230, 253, 0.85)' : 'rgba(187, 247, 208, 0.85)'));
       ctx.stroke();
       ctx.shadowBlur = 0;
+
+      if (state.viewMode === 'edit' && state.showSuspectNotes && n.suspect) {
+        ctx.save();
+        drawRoundedRect(ctx, x - 1, topY - 1, w + 2, barH + 2, rad + 1);
+        ctx.strokeStyle = isSelectedInEdit ? '#ffffff' : '#f59e0b';
+        ctx.lineWidth = isSelectedInEdit ? 2.8 : 2.2;
+        ctx.setLineDash([5, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        if (w >= 12 && barH >= 14) {
+          const warnR = Math.min(7, Math.max(5, w * 0.22));
+          const warnX = x + warnR + 2;
+          const warnY = Math.min(botY - warnR - 2, topY + warnR + 3);
+          ctx.beginPath();
+          ctx.arc(warnX, warnY, warnR, 0, Math.PI * 2);
+          ctx.fillStyle = '#f59e0b';
+          ctx.fill();
+          ctx.lineWidth = 1.1;
+          ctx.strokeStyle = '#0f172a';
+          ctx.stroke();
+          ctx.font = '800 ' + Math.round(warnR * 1.4) + 'px -apple-system, BlinkMacSystemFont, sans-serif';
+          ctx.fillStyle = '#0f172a';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('!', warnX, warnY + 0.5);
+        }
+        ctx.restore();
+      }
 
       // Group Select Checkmark Badge when multiple notes are selected or in Group Select tool mode
       if (isInGroup && (state.selectedNoteIndices.size >= 2 || state.editorTool === 'group') && w >= 12 && barH >= 14) {
@@ -1707,6 +1737,7 @@
     if (!note && groupCount === 0) {
       state.isCloningNote = false;
       if (labelEl) {
+        labelEl.classList.remove('suspect-active');
         if (state.editorTool === 'group') {
           labelEl.textContent = 'Group Select: Tap notes of the same pitch or drag a box to select & merge';
         } else {
@@ -1747,6 +1778,7 @@
         mergeBtn.textContent = '🔗 Merge Selected (' + groupCount + ')';
       }
       if (labelEl) {
+        labelEl.classList.remove('suspect-active');
         labelEl.textContent = groupCount + ' × ' + pitchName + ' notes selected — ready to merge';
       }
     } else {
@@ -1756,12 +1788,19 @@
       }
       if (labelEl && note) {
         if (state.isCloningNote) {
+          labelEl.classList.remove('suspect-active');
           labelEl.textContent = 'Copy Mode: Tap any piano key or runway lane to place copy';
         } else if (state.editorTool === 'group') {
+          labelEl.classList.remove('suspect-active');
           labelEl.textContent = '1 × ' + note.name + ' selected — tap more ' + note.name + ' notes or drag a box to merge';
         } else {
           const fingerSuffix = (note.finger >= 1 && note.finger <= 5) ? (' • Finger: ' + note.finger) : '';
-          labelEl.textContent = note.name + ' (MIDI ' + note.midi + ')' + fingerSuffix + ' • Start: ' + note.time.toFixed(2) + 's • Len: ' + note.duration.toFixed(2) + 's';
+          let text = note.name + ' (MIDI ' + note.midi + ')' + fingerSuffix + ' • Start: ' + note.time.toFixed(2) + 's • Len: ' + note.duration.toFixed(2) + 's';
+          if (note.suspect && note.suspectReason) {
+            text += ' • ⚠ ' + note.suspectReason;
+          }
+          labelEl.textContent = text;
+          labelEl.classList.toggle('suspect-active', !!(note && note.suspect));
         }
       }
     }
@@ -1850,6 +1889,127 @@
     flashAutoSaveIndicator();
   }
 
+  function analyzeSongConfidence(song) {
+    const toggleBtn = document.getElementById('editorSuspectToggleBtn');
+    const nextBtn = document.getElementById('editorNextSuspectBtn');
+    const updateSuspectButtons = function (count) {
+      if (toggleBtn) toggleBtn.textContent = '⚠ Suspect (' + count + ')';
+      if (nextBtn) nextBtn.disabled = (count === 0);
+    };
+
+    if (!song || !Array.isArray(song.notes) || song.notes.length === 0) {
+      updateSuspectButtons(0);
+      return 0;
+    }
+
+    if (!song.isCustom && !song.isModifiedBuiltin) {
+      for (let i = 0; i < song.notes.length; i++) {
+        song.notes[i].suspect = false;
+        song.notes[i].suspectReason = '';
+      }
+      updateSuspectButtons(0);
+      return 0;
+    }
+
+    const pcWeights = new Array(12).fill(0);
+    const pcCounts = new Array(12).fill(0);
+    const velocities = [];
+    const midis = [];
+
+    for (let i = 0; i < song.notes.length; i++) {
+      const n = song.notes[i];
+      const pc = ((n.midi % 12) + 12) % 12;
+      const vel = typeof n.velocity === 'number' ? n.velocity : 0.78;
+      const dur = typeof n.duration === 'number' ? n.duration : 0.25;
+      pcWeights[pc] += dur * vel;
+      pcCounts[pc]++;
+      velocities.push(vel);
+      midis.push(n.midi);
+    }
+
+    const MAJOR_OFFSETS = [0, 2, 4, 5, 7, 9, 11];
+    const MINOR_OFFSETS = [0, 2, 3, 5, 7, 8, 10];
+    let bestRoot = 0;
+    let bestMode = 'Major';
+    let bestScore = -1;
+    let bestOffsets = MAJOR_OFFSETS;
+
+    for (let r = 0; r < 12; r++) {
+      const modes = [
+        { name: 'Major', offsets: MAJOR_OFFSETS },
+        { name: 'Minor', offsets: MINOR_OFFSETS }
+      ];
+      for (let m = 0; m < modes.length; m++) {
+        const offsets = modes[m].offsets;
+        let score = 0;
+        for (let k = 0; k < offsets.length; k++) {
+          const pc = (r + offsets[k]) % 12;
+          const mult = (offsets[k] === 0 || offsets[k] === 7) ? 1.05 : 1.0;
+          score += pcWeights[pc] * mult;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestRoot = r;
+          bestMode = modes[m].name;
+          bestOffsets = offsets;
+        }
+      }
+    }
+
+    song.detectedKeyName = NOTE_NAMES_CHORD[bestRoot] + ' ' + bestMode;
+    const inScale = new Set(bestOffsets.map(function (off) { return (bestRoot + off) % 12; }));
+    if (bestMode === 'Minor') {
+      const raised7 = (bestRoot + 11) % 12;
+      if (pcCounts[raised7] >= 3) {
+        inScale.add(raised7);
+      }
+    }
+
+    velocities.sort(function (a, b) { return a - b; });
+    midis.sort(function (a, b) { return a - b; });
+    const medVel = velocities[Math.floor(velocities.length * 0.5)] || 0.78;
+    const p12Vel = velocities[Math.floor(velocities.length * 0.12)] || 0.25;
+    const p05Midi = midis[Math.floor(midis.length * 0.05)] || 36;
+    const p95Midi = midis[Math.floor(midis.length * 0.95)] || 84;
+
+    let suspectCount = 0;
+    for (let i = 0; i < song.notes.length; i++) {
+      const n = song.notes[i];
+      const reasons = [];
+      const vel = typeof n.velocity === 'number' ? n.velocity : 0.78;
+      const dur = typeof n.duration === 'number' ? n.duration : 0.25;
+      const pc = ((n.midi % 12) + 12) % 12;
+
+      if (vel <= Math.min(0.30, p12Vel)) {
+        reasons.push('Quiet ghost note (' + Math.round(vel * 100) + '% vel)');
+      }
+      if (dur < 0.085) {
+        reasons.push('Short micro-note (' + Math.round(dur * 1000) + 'ms)');
+      }
+      if (!inScale.has(pc) && pcCounts[pc] <= Math.max(2, Math.floor(song.notes.length * 0.015)) && (vel < medVel * 0.82 || dur < 0.14)) {
+        reasons.push('Out-of-key outlier (' + song.detectedKeyName + ')');
+      }
+      if ((n.midi < p05Midi - 12 || n.midi > p95Midi + 12) && vel < medVel * 0.85) {
+        reasons.push('Extreme register outlier');
+      }
+      // Check overlap / double-trigger on the same MIDI key within 40ms
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = song.notes[j];
+        if (n.time - prev.time > 0.25) break;
+        if (prev.midi === n.midi && (n.time - prev.time) < 0.04) {
+          reasons.push('Double-triggered overlap');
+          break;
+        }
+      }
+      n.suspect = reasons.length > 0;
+      n.suspectReason = reasons.join(' • ');
+      if (n.suspect) suspectCount++;
+    }
+
+    updateSuspectButtons(suspectCount);
+    return suspectCount;
+  }
+
   function commitSongEdit(keepNoteRef) {
     if (!state.song || !Array.isArray(state.song.notes)) return;
 
@@ -1906,6 +2066,7 @@
     rebuildKeyboardGeometry();
     syncTimelineUI();
     syncLoopUI();
+    analyzeSongConfidence(state.song);
     syncEditorInspectorUI();
     syncUndoRedoUI();
   }
@@ -2420,6 +2581,11 @@
         setFingerForSelectedNotes(parseInt(e.key, 10));
         return;
       }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && k === 'n') {
+        e.preventDefault();
+        jumpToNextSuspectNote();
+        return;
+      }
     }
 
     if (e.code === 'Space') {
@@ -2879,6 +3045,7 @@
     rebuildKeyboardGeometry();
     syncTimelineUI();
     syncLoopUI();
+    analyzeSongConfidence(state.song);
     syncEditorInspectorUI();
     syncUndoRedoUI();
   }
@@ -3013,6 +3180,109 @@
       state.song.gridOffset = Math.round((curOff + 0.05) * 1000) / 1000;
       const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
       commitSongEdit(keepRef);
+    });
+  }
+
+  function jumpToNextSuspectNote() {
+    if (!state.song || !Array.isArray(state.song.notes) || state.song.notes.length === 0) return;
+    const notes = state.song.notes;
+    let startIdx = 0;
+    if (state.selectedNoteIndex >= 0 && state.selectedNoteIndex < notes.length) {
+      startIdx = (state.selectedNoteIndex + 1) % notes.length;
+    } else {
+      for (let i = 0; i < notes.length; i++) {
+        if (notes[i].time >= state.currentTime) {
+          startIdx = i;
+          break;
+        }
+      }
+    }
+
+    let foundIdx = -1;
+    for (let offset = 0; offset < notes.length; offset++) {
+      const idx = (startIdx + offset) % notes.length;
+      if (notes[idx].suspect === true) {
+        foundIdx = idx;
+        break;
+      }
+    }
+    if (foundIdx < 0) return;
+
+    const target = notes[foundIdx];
+    state.selectedNoteIndex = foundIdx;
+    state.selectedNoteIndices.clear();
+    state.selectedNoteIndices.add(foundIdx);
+    seekTo(Math.max(0, target.time - 0.75));
+    audioEngine.playNote(target.midi, Math.min(0.6, target.duration), target.velocity || 0.78);
+    syncEditorInspectorUI();
+  }
+
+  const editorSuspectToggleBtn = document.getElementById('editorSuspectToggleBtn');
+  const editorNextSuspectBtn = document.getElementById('editorNextSuspectBtn');
+  const editorSnapAllBtn = document.getElementById('editorSnapAllBtn');
+
+  if (editorSuspectToggleBtn) {
+    editorSuspectToggleBtn.addEventListener('click', function () {
+      state.showSuspectNotes = !state.showSuspectNotes;
+      editorSuspectToggleBtn.classList.toggle('active', state.showSuspectNotes);
+    });
+  }
+
+  if (editorNextSuspectBtn) {
+    editorNextSuspectBtn.addEventListener('click', function () {
+      jumpToNextSuspectNote();
+    });
+  }
+
+  if (editorSnapAllBtn) {
+    editorSnapAllBtn.addEventListener('click', function () {
+      if (!state.song || !Array.isArray(state.song.notes) || state.song.notes.length === 0) return;
+      const snapBeats = state.editorSnapBeats > 0 ? state.editorSnapBeats : 0.25;
+      const stepSec = (60 / Math.max(30, Math.min(260, state.song.bpm || 120))) * snapBeats;
+      const offset = typeof state.song.gridOffset === 'number' ? state.song.gridOffset : 0.8;
+
+      const hasSelection = state.selectedNoteIndices && state.selectedNoteIndices.size > 0;
+      const candidates = [];
+      if (hasSelection) {
+        state.selectedNoteIndices.forEach(function (idx) {
+          if (state.song.notes[idx]) candidates.push(state.song.notes[idx]);
+        });
+      } else {
+        for (let i = 0; i < state.song.notes.length; i++) {
+          candidates.push(state.song.notes[i]);
+        }
+      }
+
+      const changes = [];
+      for (let i = 0; i < candidates.length; i++) {
+        const n = candidates[i];
+        const nearest = offset + Math.round((n.time - offset) / stepSec) * stepSec;
+        const diff = Math.abs(n.time - nearest);
+        if (nearest >= 0 && diff <= stepSec * 0.38 && diff >= 0.004) {
+          changes.push({ note: n, nextTime: Math.round(nearest * 1000) / 1000 });
+        }
+      }
+
+      if (changes.length === 0) {
+        const labelEl = document.getElementById('inspectorNoteLabel');
+        if (labelEl) {
+          labelEl.classList.remove('suspect-active');
+          labelEl.textContent = '✓ Snapped 0 note(s) to beat grid';
+        }
+        return;
+      }
+
+      pushUndoSnapshot();
+      for (let i = 0; i < changes.length; i++) {
+        changes[i].note.time = changes[i].nextTime;
+      }
+      const keepRef = (state.selectedNoteIndex >= 0) ? state.song.notes[state.selectedNoteIndex] : null;
+      commitSongEdit(keepRef);
+      const labelEl = document.getElementById('inspectorNoteLabel');
+      if (labelEl) {
+        labelEl.classList.remove('suspect-active');
+        labelEl.textContent = '✓ Snapped ' + changes.length + ' note(s) to beat grid';
+      }
     });
   }
 

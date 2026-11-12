@@ -231,6 +231,19 @@
             <button id="editorGridLeftBtn" type="button" class="ui-btn" title="Shift Bar 1 Grid Earlier (-0.05s)">Bar ◀</button>
             <button id="editorGridRightBtn" type="button" class="ui-btn" title="Shift Bar 1 Grid Later (+0.05s)">Bar ▶</button>
           </div>
+
+          <!-- Confidence & Gentle Quantize Controls -->
+          <div class="editor-group">
+            <button id="editorSuspectToggleBtn" type="button" class="ui-btn editor-suspect-btn active" title="Highlight low-confidence / suspect transcription notes on the runway">
+              ⚠ Suspect (0)
+            </button>
+            <button id="editorNextSuspectBtn" type="button" class="ui-btn" title="Jump to and audition the next suspect note (Shortcut: N)" disabled>
+              Next ⚠
+            </button>
+            <button id="editorSnapAllBtn" type="button" class="ui-btn" title="Gently snap nearby note starts onto the active beat grid">
+              ⌗ Snap Grid
+            </button>
+          </div>
         </div>
 
         <!-- Selected Note Inspector Bar -->

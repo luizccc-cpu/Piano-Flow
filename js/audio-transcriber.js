@@ -417,9 +417,10 @@
 
     const contentType = (res.headers.get('content-type') || '').toLowerCase();
     let parsedSong = null;
+    let payload = null;
 
     if (contentType.includes('application/json')) {
-      const payload = await res.json();
+      payload = await res.json();
       if (payload.midi_base64) {
         const ab = base64ToArrayBuffer(payload.midi_base64);
         parsedSong = global.parseStandardMidiFile(ab, file.name);
@@ -460,6 +461,25 @@
     if (!parsedSong.bpm) parsedSong.bpm = 120;
     if (!parsedSong.beatsPerBar) parsedSong.beatsPerBar = 4;
     if (typeof parsedSong.gridOffset !== 'number') parsedSong.gridOffset = 0.8;
+
+    let hasServerRhythm = false;
+    if (payload && typeof payload.bpm === 'number' && isFinite(payload.bpm) && payload.bpm >= 40 && payload.bpm <= 240) {
+      parsedSong.bpm = Math.round(payload.bpm);
+      hasServerRhythm = true;
+    }
+    if (payload && typeof payload.grid_offset === 'number' && isFinite(payload.grid_offset) && payload.grid_offset >= 0) {
+      parsedSong.gridOffset = Math.round(payload.grid_offset * 1000) / 1000;
+      hasServerRhythm = true;
+    }
+    if (hasServerRhythm && typeof global.generateBeatGrid === 'function') {
+      parsedSong.beats = global.generateBeatGrid(
+        parsedSong.duration,
+        60 / parsedSong.bpm,
+        parsedSong.beatsPerBar || 4,
+        parsedSong.gridOffset
+      );
+    }
+
     if (onProgress) {
       onProgress({ stage: 'Neural AI transcription complete!', percent: 100 });
     }

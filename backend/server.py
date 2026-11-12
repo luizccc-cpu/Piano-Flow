@@ -754,6 +754,112 @@ def filter_midi_bleed_notes(
         return False
 
 
+def estimate_midi_and_audio_rhythm(
+    audio_path: Path,
+    midi_path: Path,
+) -> Dict[str, float]:
+    """
+    Estimates musical tempo (BPM) and Bar 1 beat grid offset (including the frontend's +0.8s lead-in)
+    by combining librosa beat tracking on the audio with phase-alignment against transcribed MIDI note onsets.
+    """
+    default_res = {"bpm": 120.0, "grid_offset": 0.8}
+    if not HAS_PRETTY_MIDI or not midi_path.exists():
+        return default_res
+
+    try:
+        pm = pretty_midi.PrettyMIDI(str(midi_path))
+        raw_notes = []
+        for inst in pm.instruments:
+            if not inst.is_drum:
+                raw_notes.extend(inst.notes)
+        if not raw_notes:
+            return default_res
+
+        raw_notes.sort(key=lambda n: (n.start, n.pitch))
+
+        # Cluster simultaneous note onsets within 35ms
+        clusters: List[Tuple[float, float]] = []
+        idx = 0
+        n_total = len(raw_notes)
+        while idx < n_total:
+            t0 = float(raw_notes[idx].start)
+            w_sum = 0.0
+            while idx < n_total and (float(raw_notes[idx].start) - t0) <= 0.035:
+                dur = max(0.05, min(2.0, float(raw_notes[idx].end - raw_notes[idx].start)))
+                w_sum += float(raw_notes[idx].velocity) * (0.5 + 0.5 * dur)
+                idx += 1
+            clusters.append((t0, w_sum))
+
+        # 1. Estimate BPM via librosa beat_track on first 90s of audio
+        est_bpm = 0.0
+        if HAS_LIBROSA and audio_path.exists():
+            try:
+                y, sr = librosa.load(str(audio_path), sr=22050, mono=True, duration=90.0)
+                if y.size > sr * 2:
+                    tempo_val, _ = librosa.beat.beat_track(y=y, sr=sr)
+                    arr = np.asarray(tempo_val).flat
+                    if arr.size > 0:
+                        est_bpm = float(arr[0])
+            except Exception:
+                est_bpm = 0.0
+
+        # 2. Fallback BPM from MIDI inter-onset intervals if librosa beat_track failed
+        if est_bpm <= 30.0 and len(clusters) >= 6:
+            iois = []
+            for i in range(1, len(clusters)):
+                dt = clusters[i][0] - clusters[i - 1][0]
+                if 0.18 <= dt <= 1.5:
+                    iois.append(dt)
+            if iois:
+                med_ioi = float(np.median(iois))
+                if med_ioi > 0:
+                    est_bpm = 60.0 / med_ioi
+
+        if est_bpm <= 30.0 or not np.isfinite(est_bpm):
+            est_bpm = 120.0
+
+        # Fold half/double tempo into natural piano practice range [64, 164]
+        while est_bpm < 64.0:
+            est_bpm *= 2.0
+        while est_bpm > 164.0:
+            est_bpm *= 0.5
+        est_bpm = float(round(np.clip(est_bpm, 48.0, 208.0)))
+
+        # 3. Find beat phase in [0, beat_sec) that best aligns with weighted MIDI note onsets
+        beat_sec = 60.0 / est_bpm
+        times = np.array([c[0] for c in clusters], dtype=np.float64)
+        weights = np.array([c[1] for c in clusters], dtype=np.float64)
+
+        angles = 2.0 * np.pi * (times / beat_sec)
+        sin_sum = float(np.sum(weights * np.sin(angles)))
+        cos_sum = float(np.sum(weights * np.cos(angles)))
+        best_phase = (np.arctan2(sin_sum, cos_sum) / (2.0 * np.pi)) * beat_sec
+        best_phase = float(best_phase % beat_sec)
+
+        # Find the first strong musical onset to anchor Bar 1 near the start of the piece
+        med_w = float(np.median(weights)) if weights.size > 0 else 0.0
+        first_strong_t = float(times[0])
+        for t_val, w_val in clusters[:12]:
+            if w_val >= med_w * 0.45:
+                first_strong_t = float(t_val)
+                break
+
+        k_steps = round((first_strong_t - best_phase) / beat_sec)
+        bar1_midi_sec = best_phase + k_steps * beat_sec
+        if bar1_midi_sec < 0.0:
+            bar1_midi_sec += beat_sec
+
+        # Frontend adds +0.8s lead-in offset to all parsed MIDI note times
+        frontend_grid_offset = round(0.8 + bar1_midi_sec, 3)
+        return {
+            "bpm": est_bpm,
+            "grid_offset": float(np.clip(frontend_grid_offset, 0.05, 10.0)),
+        }
+    except Exception as exc:
+        print(f"[KeyFlow Rhythm] Rhythm estimation fallback: {exc}")
+        return default_res
+
+
 def transcribe_with_librosa_cqt(audio_path: Path, sensitivity: float) -> Tuple[List[Dict[str, Any]], float]:
     """
     Polyphonic Constant-Q Transform (CQT) + Harmonic Suppression Piano Transcriber.
@@ -955,6 +1061,7 @@ async def transcribe_endpoint(
 
                 if HAS_PRETTY_MIDI:
                     midi_bytes = notes_to_midi_bytes(notes, bpm=est_bpm)
+                    output_midi.write_bytes(midi_bytes)
                     transcriber_used = "librosa-cqt"
                 else:
                     t_trans_end = time.perf_counter()
@@ -972,6 +1079,8 @@ async def transcribe_endpoint(
                         },
                     }
 
+            rhythm = estimate_midi_and_audio_rhythm(target_audio, output_midi)
+
             t_trans_end = time.perf_counter()
             trans_s = round(t_trans_end - t_trans_start, 2)
             print(f"[KeyFlow Backend] separation={separator_used} {sep_s:.1f}s | transcription={transcriber_used} {trans_s:.1f}s")
@@ -981,6 +1090,8 @@ async def transcribe_endpoint(
                 "title": clean_title,
                 "separator_used": separator_used,
                 "transcriber_used": transcriber_used,
+                "bpm": rhythm["bpm"],
+                "grid_offset": rhythm["grid_offset"],
                 "timings": {
                     "separation_s": sep_s,
                     "transcription_s": trans_s,
