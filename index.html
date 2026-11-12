@@ -454,9 +454,9 @@
             <div class="modal-field">
               <label for="transcribeModeSelect" class="modal-label">Transcription Engine</label>
               <select id="transcribeModeSelect" class="ui-select" style="width:100%;">
-                <option value="auto">Auto (Python AI Server &rarr; Browser Fallback)</option>
-                <option value="browser">In-Browser Engine (Instant / Offline iPad)</option>
-                <option value="server">Python AI Server (BS-RoFormer + Transkun AI)</option>
+                <option value="auto">Auto (AI Server &rarr; Browser Fallback)</option>
+                <option value="browser">In-Browser Engine (Instant / Offline)</option>
+                <option value="server">AI Server</option>
               </select>
             </div>
 
@@ -477,11 +477,11 @@
                 <input id="aiServerUrlInput" type="text" class="modal-text-input" value="http://localhost:8000" placeholder="http://192.168.1.x:8000" />
                 <button id="testAiServerBtn" type="button" class="ui-btn" style="padding:4px 9px; font-size:11.5px;">Check</button>
               </div>
-              <span id="aiServerStatusPill" class="server-status-pill">Browser Fallback Ready</span>
+              <span id="aiServerStatusPill" class="server-status-pill">Offline</span>
             </div>
 
             <div class="hud-row" style="font-size:12px;">
-              <span>Isolate Piano Stem from Full Mix (<code>BS-RoFormer</code> / <code>HT-Demucs</code> on Server)</span>
+              <span>Isolate Piano Stem from Full Mix</span>
               <button id="isolatePianoSwitch" type="button" class="switch-btn active-green" aria-label="Toggle Piano Stem Isolation">
                 <span class="switch-thumb"></span>
               </button>
@@ -547,7 +547,7 @@
                 <input id="sheetServerUrlInput" type="text" class="modal-text-input" value="http://localhost:8000" placeholder="http://192.168.1.x:8000" />
                 <button id="testSheetServerBtn" type="button" class="ui-btn" style="padding:4px 9px; font-size:11.5px;">Check</button>
               </div>
-              <span id="sheetServerStatusPill" class="server-status-pill">Offline Digital Ready</span>
+              <span id="sheetServerStatusPill" class="server-status-pill">Offline</span>
             </div>
             <div style="font-size:11.5px; color:#94a3b8; margin-top:2px;">
               Digital <code>.musicxml</code> and <code>.mxl</code> files are parsed instantly offline in your browser. Visual scans (<code>.pdf</code>, <code>.png</code>, <code>.jpg</code>) connect to this server for CV/AI recognition.

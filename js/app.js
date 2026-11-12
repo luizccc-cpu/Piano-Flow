@@ -3609,12 +3609,10 @@
     const status = await audioTranscriber.checkServerHealth(url, 4000);
     if (status.ok) {
       aiServerStatusPill.className = 'server-status-pill online';
-      const info = status.data || status.info;
-      const engines = (info && Array.isArray(info.engines)) ? info.engines.join(' + ') : 'Ready';
-      aiServerStatusPill.textContent = 'Online (' + engines + ')';
+      aiServerStatusPill.textContent = 'Online';
     } else {
       aiServerStatusPill.className = 'server-status-pill offline';
-      aiServerStatusPill.textContent = 'Offline (Browser Engine Ready)';
+      aiServerStatusPill.textContent = 'Offline';
     }
   }
 
@@ -3901,12 +3899,10 @@
 
     if (status.ok) {
       sheetServerStatusPill.className = 'server-status-pill online';
-      const info = status.data || status.info;
-      const engines = (info && Array.isArray(info.engines)) ? info.engines.join(' + ') : 'OMR + MusicXML';
-      sheetServerStatusPill.textContent = 'Online (' + engines + ')';
+      sheetServerStatusPill.textContent = 'Online';
     } else {
       sheetServerStatusPill.className = 'server-status-pill offline';
-      sheetServerStatusPill.textContent = 'Offline (Digital Scores Ready)';
+      sheetServerStatusPill.textContent = 'Offline';
     }
   }
 
