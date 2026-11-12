@@ -1858,3 +1858,21 @@ html, body {
 .inspector-note-label.suspect-active {
   color: #fcd34d;
 }
+
+.add-song-modal-card {
+  max-width: 340px;
+}
+
+.add-song-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.add-song-choice-btn {
+  width: 100%;
+  height: 44px;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+}

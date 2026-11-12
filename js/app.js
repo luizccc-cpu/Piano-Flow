@@ -2678,6 +2678,10 @@
   const homeViewCardsBtn = document.getElementById('homeViewCardsBtn');
   const homeViewCompactBtn = document.getElementById('homeViewCompactBtn');
   const homeOpenAiModalBtn = document.getElementById('homeOpenAiModalBtn');
+  const homeAddSongBtn = document.getElementById('homeAddSongBtn');
+  const addSongModal = document.getElementById('addSongModal');
+  const closeAddSongModalBtn = document.getElementById('closeAddSongModalBtn');
+  const homeOpenMidiBtn = document.getElementById('homeOpenMidiBtn');
   const backToHomeBtn = document.getElementById('backToHomeBtn');
   const toggleEditModeBtn = document.getElementById('toggleEditModeBtn');
   const editorToolbar = document.getElementById('editorToolbar');
@@ -3934,8 +3938,38 @@
     });
   }
 
+  function setAddSongModalOpen(open) {
+    if (!addSongModal) return;
+    addSongModal.classList.toggle('open', !!open);
+    addSongModal.setAttribute('aria-hidden', open ? 'false' : 'true');
+  }
+
+  if (homeAddSongBtn) {
+    homeAddSongBtn.addEventListener('click', function () {
+      setAddSongModalOpen(true);
+    });
+  }
+  if (closeAddSongModalBtn) {
+    closeAddSongModalBtn.addEventListener('click', function () {
+      setAddSongModalOpen(false);
+    });
+  }
+  if (addSongModal) {
+    addSongModal.addEventListener('click', function (e) {
+      if (e.target === addSongModal) {
+        setAddSongModalOpen(false);
+      }
+    });
+  }
+  if (homeOpenMidiBtn) {
+    homeOpenMidiBtn.addEventListener('click', function () {
+      setAddSongModalOpen(false);
+    });
+  }
+
   if (homeOpenAiModalBtn) {
     homeOpenAiModalBtn.addEventListener('click', function () {
+      setAddSongModalOpen(false);
       setTranscriberModalOpen(true);
     });
   }
@@ -4184,6 +4218,7 @@
 
   if (homeOpenSheetModalBtn) {
     homeOpenSheetModalBtn.addEventListener('click', function () {
+      setAddSongModalOpen(false);
       setSheetModalOpen(true);
     });
   }
