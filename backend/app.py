@@ -127,7 +127,7 @@ def _installed_versions() -> Dict[str, Any]:
     """Returns installed distribution versions (None if not installed), independent of import success."""
     out: Dict[str, Any] = {"python": sys.version.split()[0]}
     for dist in ("numpy", "torch", "torchaudio", "audio-separator", "onnxruntime-gpu",
-                 "onnxruntime", "transkun", "demucs", "piano_transcription_inference", "librosa", "audioread"):
+                 "onnxruntime", "transkun", "demucs", "piano_transcription_inference", "librosa", "audioread", "setuptools"):
         try:
             out[dist] = importlib.metadata.version(dist)
         except Exception:
@@ -136,21 +136,33 @@ def _installed_versions() -> Dict[str, Any]:
 
 HAS_DEMUCS = shutil.which("demucs") is not None
 
-# Prefer the 'transkun' console script because it is the documented CLI entry point.
-# Fall back to `python -m transkun.transcribe` only if the console script is not on PATH.
+# Runner snippet that shims pkg_resources.resource_filename if setuptools>=82 is installed
+# (which removed pkg_resources, breaking transkun/transcribe.py line 22).
+_TRANSKUN_RUNNER_CODE = (
+    "import sys, types, importlib.util, pathlib\n"
+    "try:\n"
+    "    import pkg_resources\n"
+    "except ImportError:\n"
+    "    m = types.ModuleType('pkg_resources')\n"
+    "    m.resource_filename = lambda pkg, res: str(pathlib.Path(importlib.util.find_spec(pkg).origin).parent / res)\n"
+    "    sys.modules['pkg_resources'] = m\n"
+    "from transkun.transcribe import main\n"
+    "sys.exit(main())\n"
+)
+
 HAS_TRANSKUN = False
 TRANSKUN_CMD: List[str] = []
 
-if shutil.which("transkun") is not None:
+try:
+    if importlib.util.find_spec("transkun") is not None:
+        HAS_TRANSKUN = True
+        TRANSKUN_CMD = [sys.executable, "-c", _TRANSKUN_RUNNER_CODE]
+except Exception:
+    pass
+
+if not HAS_TRANSKUN and shutil.which("transkun") is not None:
     HAS_TRANSKUN = True
     TRANSKUN_CMD = ["transkun"]
-else:
-    try:
-        if importlib.util.find_spec("transkun") is not None:
-            HAS_TRANSKUN = True
-            TRANSKUN_CMD = [sys.executable, "-m", "transkun.transcribe"]
-    except Exception:
-        pass
 
 # BS-RoFormer SW 6-stem model (BS-Roformer-SW.ckpt with BS-Roformer-SW.yaml), extracting ['bass', 'drums', 'other', 'vocals', 'guitar', 'piano']
 PIANO_SEPARATOR_MODEL = os.environ.get("KEYFLOW_SEPARATOR_MODEL", "BS-Roformer-SW.ckpt")
@@ -553,7 +565,7 @@ def transcribe_with_transkun(audio_path: Path, output_midi_path: Path) -> bool:
         )
         return output_midi_path.exists() and output_midi_path.stat().st_size > 80
     except subprocess.CalledProcessError as exc:
-        err_msg = (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else str(exc))[:500]
+        err_msg = (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else str(exc))[-1000:]
         print(f"[KeyFlow Space] Transkun transcription failed: {err_msg}")
         return False
     except Exception as exc:

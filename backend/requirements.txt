@@ -1,4 +1,6 @@
 spaces
+# setuptools>=82 removed pkg_resources, which transkun.transcribe imports at runtime.
+setuptools<81
 torch
 torchaudio
 fastapi
