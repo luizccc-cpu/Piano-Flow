@@ -12,6 +12,10 @@ description: "Core architecture, UX constraints, and phased roadmap for the Fall
 - **Auto-Scaled Keyboard:** Dynamically size the virtual keyboard to the exact octave range of the active song (minimum 2 octaves, maximum 88 keys), with C-octave labels on the keys.
 - **Audio Engine:** Default to the "Acoustic Grand Piano" preset (with "Mellow Felt Grand" second on the list) and a live Felt Softness / Warmth low-pass & transient shaper slider (0%–100%).
 
+## Git Workflow
+- **Commit, never push:** When finishing a task (including quick fixes), commit the changes locally with a clear, descriptive message. Never run `git push` — the user reviews commits and pushes manually.
+- **Implementer prompts:** Any prompt written for another model to implement must end with an instruction to commit the work (without pushing) when done.
+
 ## Development Phases
 - **Phase 1 (Complete):** Core visualizer, 5s horizon, auto-scaled keyboard, Mellow Felt Grand sound engine, A-B looping, Hand Isolation (L/R), Wait Mode, and `.MID` file upload.
 - **Phase 2 (Complete):** 
